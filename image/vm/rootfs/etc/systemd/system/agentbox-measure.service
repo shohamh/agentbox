@@ -1,0 +1,10 @@
+[Unit]
+Description=Agentbox measured boot (extend the appliance image into PCR 11)
+After=local-fs.target systemd-udevd.service
+Before=agentbox-appliance.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/appliance-measure
+[Install]
+WantedBy=multi-user.target

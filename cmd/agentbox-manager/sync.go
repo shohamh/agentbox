@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"time"
 
 	"agentbox/pkg/bundle"
@@ -166,6 +167,13 @@ func (m *Manager) recycleAppliance(reason string) {
 	m.emit("appliance.recycle", map[string]any{"reason": reason})
 	m.stopAll(reason, true)
 	time.Sleep(1500 * time.Millisecond)
+	// In the VM (systemd is PID 1) a recycle is a reboot from the signed base
+	// disk; in the container test bed the process exits and the runtime restarts it.
+	if _, err := os.Stat("/run/systemd/system"); err == nil {
+		if exec.Command("systemctl", "reboot").Run() == nil {
+			time.Sleep(time.Minute)
+		}
+	}
 	os.Exit(0)
 }
 

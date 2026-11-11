@@ -1,0 +1,12 @@
+[Unit]
+Description=Agentbox appliance (measurement, manager, local Envoy and collector)
+After=network-online.target agentbox-measure.service agentbox-data.service agentbox-site.service chrony.service
+Requires=agentbox-measure.service
+Wants=network-online.target agentbox-data.service agentbox-site.service
+[Service]
+ExecStart=/usr/local/bin/appliance-boot
+Restart=always
+RestartSec=2
+KillMode=mixed
+[Install]
+WantedBy=multi-user.target

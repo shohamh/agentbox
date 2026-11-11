@@ -1,0 +1,17 @@
+{
+  "control_listen": "vsock://:7000",
+  "tpm_socket": "/dev/tpmrm0",
+  "data_dir": "/data",
+  "run_dir": "/run/agentbox",
+  "policy_pubkey": "/etc/agentbox/policy.pub",
+  "enroll_url": "https://enroll.agentbox.corp:18443",
+  "permsvc_url": "https://permsvc.agentbox.corp:8443",
+  "registry": "registry.agentbox.corp:5000",
+  "gateway_host": "gw.agentbox.corp",
+  "gateway_port": 443,
+  "telemetry_url": "https://tel.agentbox.corp:4318",
+  "bridge_cidr": "10.88.0.0/24",
+  "runsc_flags": ["--ignore-cgroups"],
+  "envoy_bin": "/usr/local/bin/envoy",
+  "otelcol_bin": "/usr/local/bin/otelcol-contrib"
+}

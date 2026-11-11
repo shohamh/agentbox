@@ -30,6 +30,7 @@ func errOut(w http.ResponseWriter, code int, err error) {
 func (m *Manager) api() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", m.apiStatus)
+	mux.HandleFunc("GET /v1/diagnostics", m.diagnostics)
 	mux.HandleFunc("GET /v1/identity", func(w http.ResponseWriter, _ *http.Request) {
 		jsonOut(w, 200, map[string]any{"ak_public": m.akPub, "ek_public": m.ekPub, "release": m.rel})
 	})

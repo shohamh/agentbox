@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1
+# Bootable appliance disk for Hyper-V (VHDX) and QEMU (raw), built without any
+# privileged step: the root filesystem is assembled with `mke2fs -d`.
+#   docker build -f image/vm/Dockerfile.vm --target out --output type=local,dest=dist/vm .
+# Build args: FLAVOR=prod|dev (dev adds a serial console login), VERSION,
+# EXTRA (extra kernel command line, for example agentbox.control=tcp://0.0.0.0:7000).
+# Boot chain: UEFI (Secure Boot, Microsoft UEFI CA) -> Debian signed shim ->
+# signed GRUB -> signed Debian kernel. The release manifest (PCR 11) is
+# computed over this root filesystem; scripts/build-vm.sh signs it.
+FROM agentbox-appliance:prod AS app
+FROM agentbox-bins:dev AS bins
+
+FROM debian:bookworm-slim AS rootfs
+ARG FLAVOR=prod
+ARG VERSION=1.0.0-poc-vm
+ENV DEBIAN_FRONTEND=noninteractive
+# A minimal initramfs: only what mounts the root disk on Hyper-V (hv_storvsc via
+# the VMBus) and on QEMU/KVM (virtio). Small is fast to load and a smaller boot surface.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      systemd systemd-sysv systemd-resolved udev dbus kmod \
+      linux-image-cloud-amd64 initramfs-tools shim-signed grub-efi-amd64-signed \
+      iproute2 nftables iputils-ping procps ca-certificates curl chrony util-linux e2fsprogs \
+      dosfstools mount libcap2-bin \
+ && echo 'MODULES=list' > /etc/initramfs-tools/conf.d/modules \
+ && printf 'ext4\nscsi_mod\nsd_mod\nhv_vmbus\nhv_storvsc\nvirtio_blk\nvirtio_pci\nvirtio_scsi\n' >> /etc/initramfs-tools/modules \
+ && update-initramfs -u -k all && ls -la /boot \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+COPY --from=app /usr/local/bin/runsc /usr/local/bin/envoy /usr/local/bin/otelcol-contrib /usr/local/bin/
+COPY --from=app /usr/local/bin/gvisor-bin /usr/local/bin/gvisor-bin
+COPY --from=bins /bin/agentbox-manager /bin/agentbox-measure /usr/local/bin/
+COPY configs/appliance/envoy.yaml configs/appliance/sds-cert.yaml configs/appliance/sds-ca.yaml configs/appliance/otelcol.yaml /etc/agentbox/
+COPY image/.build/policy.pub /etc/agentbox/policy.pub
+COPY image/vm/rootfs/ /
+RUN printf '{"version":"%s","flavor":"%s"}\n' "$VERSION" "$FLAVOR" > /etc/agentbox/release.json \
+ && mkdir -p /etc/systemd/system/multi-user.target.wants /etc/systemd/system/sysinit.target.wants \
+ && chmod 644 /etc/systemd/system/agentbox-*.service && chmod 755 /usr/local/bin/appliance-boot /usr/local/bin/appliance-measure /usr/local/bin/agentbox-site /usr/local/bin/agentbox-data \
+ && for u in agentbox-appliance agentbox-site agentbox-data agentbox-measure; do ln -sf /etc/systemd/system/$u.service /etc/systemd/system/multi-user.target.wants/$u.service; done \
+ && ln -sf /lib/systemd/system/systemd-networkd.service /etc/systemd/system/multi-user.target.wants/systemd-networkd.service \
+ && ln -sf /lib/systemd/system/systemd-resolved.service /etc/systemd/system/multi-user.target.wants/systemd-resolved.service \
+ && ln -sf /lib/systemd/system/chrony.service /etc/systemd/system/multi-user.target.wants/chrony.service \
+ && printf 'hv_vmbus\nhv_storvsc\nhv_netvsc\nhv_utils\nhv_sock\nvsock\nvhost_vsock\ntpm_crb\ntpm_tis\n' > /etc/modules-load.d/agentbox.conf \
+ && echo agentbox-appliance > /etc/hostname && passwd -l root \
+ && if [ "$FLAVOR" = dev ]; then \
+      mkdir -p /etc/systemd/system/serial-getty@ttyS0.service.d \
+ &&   printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I 115200 vt220\n' > /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf \
+ &&   ln -sf /lib/systemd/system/serial-getty@.service /etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service 2>/dev/null || true; \
+    else \
+      ln -sf /dev/null /etc/systemd/system/getty@tty1.service && ln -sf /dev/null /etc/systemd/system/serial-getty@ttyS0.service; \
+    fi \
+ && ls /boot && rm -rf /usr/share/doc /usr/share/man /usr/share/locale /var/log/* /tmp/*
+
+FROM rootfs AS manifest
+RUN agentbox-measure manifest > /manifest.json
+
+FROM debian:bookworm-slim AS disk
+ARG EXTRA=""
+ARG ROOT_MB=3072
+RUN apt-get update && apt-get install -y --no-install-recommends e2fsprogs dosfstools mtools fdisk qemu-utils && rm -rf /var/lib/apt/lists/*
+COPY --from=rootfs / /rootfs
+COPY image/vm/grub.cfg /grub.cfg.in
+RUN set -e; cd /rootfs \
+ && rm -f etc/resolv.conf && ln -s ../run/systemd/resolve/stub-resolv.conf etc/resolv.conf \
+ && printf 'LABEL=abxroot / ext4 defaults,noatime 0 1\nLABEL=ESP /boot/efi vfat umask=0077,nofail 0 2\ntmpfs /tmp tmpfs defaults,nosuid,nodev 0 0\n' > etc/fstab \
+ && mkdir -p boot/efi \
+ && ls -la vmlinuz initrd.img boot/ \
+ && sed "s#@EXTRA@#${EXTRA}#" /grub.cfg.in > /grub.cfg \
+ && cd / \
+ && mkfs.vfat -F32 -n ESP -C /esp.img 262144 \
+ && mmd -i /esp.img ::EFI ::EFI/BOOT ::EFI/debian \
+ && mcopy -i /esp.img /rootfs/usr/lib/shim/shimx64.efi.signed ::EFI/BOOT/BOOTX64.EFI \
+ && mcopy -i /esp.img /rootfs/usr/lib/shim/shimx64.efi.signed ::EFI/debian/shimx64.efi \
+ && mcopy -i /esp.img /rootfs/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed ::EFI/BOOT/grubx64.efi \
+ && mcopy -i /esp.img /rootfs/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed ::EFI/debian/grubx64.efi \
+ && mcopy -i /esp.img /grub.cfg ::EFI/BOOT/grub.cfg \
+ && mcopy -i /esp.img /grub.cfg ::EFI/debian/grub.cfg \
+ && mke2fs -q -t ext4 -L abxroot -d /rootfs /root.img ${ROOT_MB}M \
+ && truncate -s $((ROOT_MB + 257))M /disk.raw \
+ && printf 'label: gpt\nstart=2048, size=262144, type=U\nstart=264192, type=L\n' | sfdisk /disk.raw \
+ && dd if=/esp.img of=/disk.raw bs=512 seek=2048 conv=notrunc status=none \
+ && dd if=/root.img of=/disk.raw bs=512 seek=264192 conv=notrunc status=none \
+ && qemu-img convert -f raw -O vhdx -o subformat=dynamic /disk.raw /disk.vhdx \
+ && rm -f /esp.img /root.img /disk.raw && ls -la /disk.vhdx
+
+FROM scratch AS out
+COPY --from=disk /disk.vhdx /
+COPY --from=manifest /manifest.json /manifest.unsigned.json

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -9,10 +10,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
 )
 
@@ -96,13 +97,44 @@ func (s session) Can(role string) bool {
 	return rank[s.Role()] >= rank[role]
 }
 
-type sessions struct {
-	mu sync.Mutex
-	m  map[string]*session
-	st map[string]time.Time // oauth state -> created
+// sessions are kept in Postgres, so a console restart or a second replica
+// does not sign administrators out.
+type sessions struct{ pool *pgxpool.Pool }
+
+func newSessions(pool *pgxpool.Pool) *sessions { return &sessions{pool: pool} }
+
+func (st *sessions) get(id string) *session {
+	var ss session
+	var roles []byte
+	err := st.pool.QueryRow(context.Background(), `SELECT username, email, roles, id_token, expires_at FROM console_sessions WHERE id=$1 AND expires_at > now()`, id).
+		Scan(&ss.User, &ss.Email, &roles, &ss.IDToken, &ss.Expires)
+	if err != nil {
+		return nil
+	}
+	json.Unmarshal(roles, &ss.Roles)
+	return &ss
 }
 
-func newSessions() *sessions { return &sessions{m: map[string]*session{}, st: map[string]time.Time{}} }
+func (st *sessions) put(id string, ss *session) {
+	roles, _ := json.Marshal(ss.Roles)
+	st.pool.Exec(context.Background(), `INSERT INTO console_sessions(id, username, email, roles, id_token, expires_at) VALUES($1,$2,$3,$4,$5,$6)`,
+		id, ss.User, ss.Email, roles, ss.IDToken, ss.Expires)
+	st.pool.Exec(context.Background(), `DELETE FROM console_sessions WHERE expires_at < now()`)
+}
+
+func (st *sessions) del(id string) {
+	st.pool.Exec(context.Background(), `DELETE FROM console_sessions WHERE id=$1`, id)
+}
+
+func (st *sessions) putState(state string) {
+	st.pool.Exec(context.Background(), `INSERT INTO oauth_states(state) VALUES($1)`, state)
+	st.pool.Exec(context.Background(), `DELETE FROM oauth_states WHERE created_at < now() - interval '15 minutes'`)
+}
+
+func (st *sessions) takeState(state string) bool {
+	tag, err := st.pool.Exec(context.Background(), `DELETE FROM oauth_states WHERE state=$1 AND created_at > now() - interval '15 minutes'`, state)
+	return err == nil && tag.RowsAffected() == 1
+}
 
 func randHex(n int) string {
 	b := make([]byte, n)
@@ -115,29 +147,18 @@ func (s *Server) current(r *http.Request) *session {
 	if err != nil {
 		return nil
 	}
-	s.sess.mu.Lock()
-	defer s.sess.mu.Unlock()
-	ss := s.sess.m[c.Value]
-	if ss == nil || time.Now().After(ss.Expires) {
-		return nil
-	}
-	return ss
+	return s.sess.get(c.Value)
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	state := randHex(16)
-	s.sess.mu.Lock()
-	s.sess.st[state] = time.Now()
-	s.sess.mu.Unlock()
+	s.sess.putState(state)
 	http.Redirect(w, r, s.oidc.conf.AuthCodeURL(state), http.StatusFound)
 }
 
 func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
-	s.sess.mu.Lock()
-	_, ok := s.sess.st[state]
-	delete(s.sess.st, state)
-	s.sess.mu.Unlock()
+	ok := s.sess.takeState(state)
 	if !ok {
 		http.Error(w, "unknown login state; start again at /auth/login", 400)
 		return
@@ -161,9 +182,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := randHex(24)
-	s.sess.mu.Lock()
-	s.sess.m[id] = ss
-	s.sess.mu.Unlock()
+	s.sess.put(id, ss)
 	http.SetCookie(w, &http.Cookie{Name: "abx_session", Value: id, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: ss.Expires})
 	s.audit(r.Context(), ss.User, ss.Role(), "console.login", "", map[string]any{"email": ss.Email})
 	log.Printf("console login: %s (%s)", ss.User, ss.Role())
@@ -173,9 +192,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	ss := s.current(r)
 	if c, err := r.Cookie("abx_session"); err == nil {
-		s.sess.mu.Lock()
-		delete(s.sess.m, c.Value)
-		s.sess.mu.Unlock()
+		s.sess.del(c.Value)
 	}
 	http.SetCookie(w, &http.Cookie{Name: "abx_session", Value: "", Path: "/", MaxAge: -1})
 	u := s.oidc.logoutURL + "?client_id=" + s.oidc.conf.ClientID + "&post_logout_redirect_uri=" + strings.TrimSuffix(s.oidc.conf.RedirectURL, "/auth/callback") + "/"

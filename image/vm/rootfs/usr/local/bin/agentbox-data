@@ -1,0 +1,18 @@
+#!/bin/sh
+# Mounts /data: the second disk (formatted on first use), or a directory on the
+# root disk when there is none (state is then lost on recycle).
+set -u
+mkdir -p /data
+D=/dev/disk/by-label/abxdata
+if [ ! -e "$D" ]; then
+  ROOTDEV=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null | head -1)
+  for c in $(lsblk -dn -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
+    [ "$c" = "$ROOTDEV" ] && continue
+    if ! blkid "/dev/$c" >/dev/null 2>&1 && [ -z "$(lsblk -n "/dev/$c" | sed 1d)" ]; then
+      echo "formatting /dev/$c as the data disk"
+      mkfs.ext4 -q -L abxdata "/dev/$c" && udevadm settle && break
+    fi
+  done
+fi
+if [ -e "$D" ]; then mount "$D" /data; else echo "no data disk: using the root disk"; fi
+mkdir -p /data/otelq /data/sandboxes /data/images

@@ -1,0 +1,11 @@
+[Unit]
+Description=Agentbox control-plane names
+After=network-online.target
+Wants=network-online.target
+Before=agentbox-appliance.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/agentbox-site
+[Install]
+WantedBy=multi-user.target

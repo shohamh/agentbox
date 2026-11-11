@@ -1,0 +1,17 @@
+# Publishes the control plane on the Hyper-V Default Switch address of this PC,
+# so the appliance VM (NAT on that switch) can reach it. scripts\install-hyperv.ps1
+# writes ABX_HYPERV_IP into deploy/compose/.secrets/compose.env. The services the
+# appliance talks to: gateway, permsvc, telemetry, enrollment/attestation, registry.
+#   docker compose -p agentbox -f deploy/compose/docker-compose.yml -f deploy/compose/hyperv.yml \
+#     --env-file deploy/compose/.secrets/compose.env up -d
+services:
+  front-envoy:
+    ports: ["${ABX_HYPERV_IP:-127.0.0.2}:443:443"]
+  permsvc:
+    ports: ["${ABX_HYPERV_IP:-127.0.0.2}:8443:8443"]
+  otel-gateway:
+    ports: ["${ABX_HYPERV_IP:-127.0.0.2}:4318:4318"]
+  console:
+    ports: ["127.0.0.1:18443:8443", "${ABX_HYPERV_IP:-127.0.0.2}:18443:8443"]
+  registry:
+    ports: ["${ABX_HYPERV_IP:-127.0.0.2}:5000:5000"]

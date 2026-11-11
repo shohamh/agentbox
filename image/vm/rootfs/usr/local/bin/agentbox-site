@@ -1,0 +1,17 @@
+#!/bin/sh
+# Points the corporate control-plane names at the host: in the Hyper-V test
+# setup the control plane runs on the Windows PC, which is the VM's default
+# gateway on the Default Switch. In a datacenter the names resolve through DNS
+# and this step does nothing (AGENTBOX_NO_SITE=1 on the kernel command line).
+set -u
+grep -q 'agentbox.no_site=1' /proc/cmdline && exit 0
+GW=$(sed -n 's/.*agentbox\.host=\([^ ]*\).*/\1/p' /proc/cmdline)
+for _ in $(seq 1 60); do
+  [ -n "$GW" ] || GW=$(ip route show default | awk '/default/ {print $3; exit}')
+  [ -n "$GW" ] && break
+  sleep 1
+done
+[ -n "$GW" ] || { echo "no default gateway: cannot place the control-plane names"; exit 1; }
+sed -i '/# agentbox-site/d' /etc/hosts
+for n in enroll permsvc gw tel registry ca kc; do echo "$GW $n.agentbox.corp # agentbox-site" >> /etc/hosts; done
+echo "control-plane names point at $GW"

@@ -158,3 +158,17 @@ CREATE TABLE IF NOT EXISTS correlator_state (
   name      text PRIMARY KEY,
   watermark timestamptz NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS console_sessions (
+  id         text PRIMARY KEY,
+  username   text NOT NULL,
+  email      text NOT NULL DEFAULT '',
+  roles      jsonb NOT NULL DEFAULT '[]',
+  id_token   text NOT NULL DEFAULT '',
+  expires_at timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state      text PRIMARY KEY,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

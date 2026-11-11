@@ -34,6 +34,7 @@ type Config struct {
 	PermsvcURL    string `json:"permsvc_url"`
 	Registry      string `json:"registry"`
 	GatewayHost   string `json:"gateway_host"`
+	GatewayPort   int    `json:"gateway_port"`
 	TelemetryURL  string `json:"telemetry_url"`
 	BridgeCIDR    string `json:"bridge_cidr"`
 	RunscFlags    []string `json:"runsc_flags"`
@@ -67,7 +68,7 @@ type Manager struct {
 	rel     Release
 	pub     ed25519.PublicKey
 	ev      *otlp.Exporter
-	tpm     *tpm.SocketTPM
+	tpm     tpm.Conn
 	ak      *tpm.AK
 	akPub   []byte
 	ekPub   []byte
@@ -143,7 +144,7 @@ func main() {
 		m.ev.SetResource("agentbox.user", m.st.User)
 	}
 
-	if m.tpm, err = tpm.OpenSocket(cfg.TPMSocket); err != nil {
+	if m.tpm, err = tpm.Open(cfg.TPMSocket); err != nil {
 		log.Fatal(err)
 	}
 	if m.ak, err = tpm.LoadAK(m.tpm); err != nil {

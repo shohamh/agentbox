@@ -1,0 +1,9 @@
+#!/bin/sh
+# Starts agentbox-manager (the measurement already happened, once per boot, in
+# agentbox-measure.service). A test can override the control channel on the
+# kernel command line: agentbox.control=tcp://0.0.0.0:7000
+set -eu
+mkdir -p /run/agentbox/certs /data/otelq /var/log/agentbox /run/netns
+CONTROL=$(sed -n 's/.*agentbox\.control=\([^ ]*\).*/\1/p' /proc/cmdline)
+if [ -n "$CONTROL" ]; then export AGENTBOX_CONTROL_LISTEN="$CONTROL"; fi
+exec agentbox-manager /etc/agentbox/appliance.json

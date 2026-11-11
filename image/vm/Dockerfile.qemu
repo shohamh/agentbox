@@ -1,0 +1,6 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools curl ca-certificates procps \
+    && rm -rf /var/lib/apt/lists/*
+COPY image/vm/qemu-run.sh /usr/local/bin/qemu-run.sh
+RUN chmod 755 /usr/local/bin/qemu-run.sh && mkdir -p /vm /tpm
+ENTRYPOINT ["/usr/local/bin/qemu-run.sh"]

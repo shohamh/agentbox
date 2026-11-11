@@ -428,7 +428,11 @@ var gwFails atomic.Int32
 func gatewayDown() bool { return gwFails.Load() >= 2 }
 
 func (m *Manager) gatewayProbe() {
-	addr := net.JoinHostPort(m.cfg.GatewayHost, "443")
+	port := m.cfg.GatewayPort
+	if port == 0 {
+		port = 443
+	}
+	addr := net.JoinHostPort(m.cfg.GatewayHost, strconv.Itoa(port))
 	for {
 		c, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err != nil {

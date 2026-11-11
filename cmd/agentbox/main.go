@@ -505,9 +505,30 @@ func key(args []string) error {
 }
 
 func doctor() error {
-	fmt.Println("agentbox doctor: redacted diagnostics")
+	fmt.Println("agentbox doctor: diagnostics (no secrets: no tokens, keys or bundle contents)")
 	if err := status(); err != nil {
 		fmt.Println("status error:", err)
 	}
+	var d map[string]any
+	if err := cl.Do("GET", "/v1/diagnostics", nil, &d); err != nil {
+		fmt.Println()
+		fmt.Println("appliance diagnostics unavailable:", err)
+	} else {
+		fmt.Println()
+		fmt.Println("--- appliance")
+		for _, k := range []string{"pcr11", "secure_boot", "tpm_path", "kernel", "time", "time_source", "addresses", "default_route", "agentbox_hosts", "data_disk", "services", "nft_agentbox_table"} {
+			if v, ok := d[k]; ok && fmt.Sprint(v) != "" {
+				fmt.Printf("%-18s %v", k, v)
+				fmt.Println()
+			}
+		}
+		if j, ok := d["journal"].(string); ok && j != "" {
+			fmt.Println()
+			fmt.Println("--- appliance journal (tail)")
+			fmt.Println(j)
+		}
+	}
+	fmt.Println()
+	fmt.Println("--- sandboxes")
 	return list()
 }

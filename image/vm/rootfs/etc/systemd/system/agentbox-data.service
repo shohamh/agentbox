@@ -1,0 +1,10 @@
+[Unit]
+Description=Agentbox data disk
+After=local-fs.target systemd-udevd.service
+Before=agentbox-appliance.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/agentbox-data
+[Install]
+WantedBy=multi-user.target

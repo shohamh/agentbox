@@ -6,40 +6,87 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/windows/registry"
 
 	"agentbox/pkg/vsockrpc"
 )
 
-// hypervDriver defines and runs the appliance as a Hyper-V Generation 2 VM
-// (Secure Boot with the Microsoft UEFI CA template, virtual TPM, checkpoints
-// off, read-only signed base VHDX through a differencing disk discarded at
-// every recycle) using the PowerShell fallback the plan allows for v1.
-// Not exercised in the container test bed.
+// hypervDriver defines and runs the appliance as a Hyper-V Generation 2 VM,
+// driven through PowerShell (the plan's v1 fallback to the WMI provider). It
+// must run as LocalSystem or an administrator.
+//
+//	Secure Boot   on, Microsoft UEFI CA template (Debian's signed shim and kernel boot)
+//	TPM           virtual TPM with a local key protector: measured boot of the appliance
+//	Checkpoints   disabled (a checkpoint captures memory)
+//	Base disk     the signed VHDX, never written; the VM boots a differencing disk that
+//	              is discarded at every start, so every boot is from the signed image
+//	Data disk     one dynamic VHDX per PC: workspaces, image cache, collector queue
+//	Network       the Default Switch (NAT): the appliance reaches the control plane
+//	Integration   heartbeat and time sync on; guest file copy and key-value exchange off
+//	Channel       Hyper-V sockets, service GUID for port 7000
 type hypervDriver struct {
-	cfg  Config
+	cfg Config
+
+	mu   sync.Mutex
 	vmID string
 }
 
-const vmName = "agentbox-appliance"
+const (
+	vmName      = "agentbox-appliance"
+	vsockPort   = 7000
+	psTimeout   = 5 * time.Minute
+	defaultSwch = "Default Switch"
+)
 
-func newHyperV(cfg Config) (Driver, error) { return &hypervDriver{cfg: cfg}, nil }
+func newHyperV(cfg Config) (Driver, error) {
+	if cfg.SwitchName == "" {
+		cfg.SwitchName = defaultSwch
+	}
+	if cfg.MemoryMB == 0 {
+		cfg.MemoryMB = 4096
+	}
+	if cfg.CPUs == 0 {
+		cfg.CPUs = 4
+	}
+	if cfg.DataGB == 0 {
+		cfg.DataGB = 20
+	}
+	return &hypervDriver{cfg: cfg}, nil
+}
 
 func ps(ctx context.Context, script string) (string, error) {
-	out, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	ctx, cancel := context.WithTimeout(ctx, psTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
 func (h *hypervDriver) Name() string { return "hyperv" }
 
-func (h *hypervDriver) ChannelAddr() string {
+func (h *hypervDriver) vmGUID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.vmID == "" {
-		id, _ := ps(context.Background(), "(Get-VM -Name "+vmName+").Id.Guid")
-		h.vmID = id
+		id, err := ps(context.Background(), "(Get-VM -Name "+vmName+" -ErrorAction Stop).Id.Guid")
+		if err == nil && len(id) == 36 {
+			h.vmID = id
+		}
 	}
-	return "hvsock://" + h.vmID + ":7000"
+	return h.vmID
+}
+
+func (h *hypervDriver) ChannelAddr() string {
+	// The VM ID changes if the VM is recreated: look it up until it is known.
+	id := h.vmGUID()
+	if id == "" {
+		id = "00000000-0000-0000-0000-000000000000"
+	}
+	return fmt.Sprintf("hvsock://%s:%d", id, vsockPort)
 }
 
 func (h *hypervDriver) Checks() []Check {
@@ -48,18 +95,22 @@ func (h *hypervDriver) Checks() []Check {
 		out, err := ps(ctx, script)
 		return Check{Name: name, OK: err == nil && strings.EqualFold(out, want), Info: out, Fix: fix}
 	}
-	return []Check{
-		q("Hyper-V", "(Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V).State", "Enabled", "Enable Hyper-V in Windows Features and restart"),
-		q("TPM 2.0", "(Get-Tpm).TpmReady", "True", "Turn on the TPM in firmware settings"),
-		q("Secure Boot", "Confirm-SecureBootUEFI", "True", "Turn on Secure Boot in firmware settings"),
-		q("Memory integrity", "(Get-CimInstance -Namespace root/Microsoft/Windows/DeviceGuard -ClassName Win32_DeviceGuard).SecurityServicesRunning -contains 2", "True",
-			"Turn on Memory integrity in Windows Security > Device security > Core isolation, then restart"),
+	cs := []Check{
+		q("Hyper-V", "(Get-Service vmms).Status", "Running", "Enable Hyper-V in Windows Features and restart"),
+		q("virtual machine", "(Get-VM -Name "+vmName+" -ErrorAction SilentlyContinue).State", "Running", "restart the agentbox-host service: it creates and starts the appliance VM"),
+		q("Secure Boot (VM)", "(Get-VMFirmware -VMName "+vmName+" -ErrorAction SilentlyContinue).SecureBoot", "On", "recreate the VM: Remove-VM "+vmName+" -Force, then restart the service"),
+		q("virtual TPM", "(Get-VMSecurity -VMName "+vmName+" -ErrorAction SilentlyContinue).TpmEnabled", "True", "recreate the VM"),
+		q("switch", "(Get-VMSwitch -Name '"+h.cfg.SwitchName+"' -ErrorAction SilentlyContinue).Name", h.cfg.SwitchName, "the Default Switch is created by Hyper-V; restart the Hyper-V Virtual Machine Management service"),
+		q("memory integrity", "(Get-CimInstance -Namespace root/Microsoft/Windows/DeviceGuard -ClassName Win32_DeviceGuard).SecurityServicesRunning -contains 2", "True",
+			"Turn on Memory integrity in Windows Security > Device security > Core isolation, then restart (needed for attestation level B)"),
 	}
+	return cs
 }
 
-// registerVsock maps vsock port 7000 to a Hyper-V socket service GUID.
+// registerVsock maps the Hyper-V socket service GUID of vsock port 7000, so
+// the Linux guest's AF_VSOCK listener is reachable from this host.
 func registerVsock() error {
-	g := vsockrpc.VsockServiceID(7000)
+	g := vsockrpc.VsockServiceID(vsockPort)
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE,
 		`SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices\`+g.String(), registry.SET_VALUE)
 	if err != nil {
@@ -69,34 +120,55 @@ func registerVsock() error {
 	return k.SetStringValue("ElementName", "Agentbox control channel")
 }
 
+func q(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
 func (h *hypervDriver) Start(ctx context.Context) error {
 	if err := registerVsock(); err != nil {
 		return fmt.Errorf("register hvsock service: %w", err)
 	}
-	st := h.cfg.StateDir
+	dir := h.cfg.StateDir
+	base := h.cfg.BaseImage
+	diff := filepath.Join(dir, "diff.vhdx")
+	data := filepath.Join(dir, "data.vhdx")
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-if (-not (Get-VM -Name %[1]s -ErrorAction SilentlyContinue)) {
-  New-VHD -Path '%[2]s\diff.vhdx' -ParentPath '%[3]s' -Differencing | Out-Null
-  New-VM -Name %[1]s -Generation 2 -MemoryStartupBytes 8GB -VHDPath '%[2]s\diff.vhdx' -SwitchName agentbox-int | Out-Null
-  Add-VMHardDiskDrive -VMName %[1]s -Path '%[2]s\data.vhdx'
-  Set-VM -Name %[1]s -ProcessorCount 4 -StaticMemory -CheckpointType Disabled -AutomaticCheckpointsEnabled $false -AutomaticStopAction TurnOff
-  Set-VMFirmware -VMName %[1]s -EnableSecureBoot On -SecureBootTemplate MicrosoftUEFICertificateAuthority
-  Set-VMKeyProtector -VMName %[1]s -NewLocalKeyProtector
-  Enable-VMTPM -VMName %[1]s
-  Disable-VMIntegrationService -VMName %[1]s -Name 'Guest Service Interface','Key-Value Pair Exchange'
-  Add-VMNetworkAdapter -VMName %[1]s -SwitchName agentbox-dbg
+$name = '%[1]s'; $dir = '%[2]s'; $base = '%[3]s'; $diff = '%[4]s'; $data = '%[5]s'
+if (-not (Test-Path -LiteralPath $base)) { throw "appliance disk not found: $base" }
+$vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+if ($vm -and $vm.State -eq 'Running') { return }
+if ($vm) {
+  # boot from the signed base again: discard the differencing disk
+  if ($vm.State -ne 'Off') { Stop-VM -Name $name -TurnOff -Force }
+  Get-VMHardDiskDrive -VMName $name | Where-Object { $_.Path -eq $diff } | Remove-VMHardDiskDrive
+  Remove-Item -LiteralPath $diff -Force -ErrorAction SilentlyContinue
+  New-VHD -Path $diff -ParentPath $base -Differencing | Out-Null
+  Add-VMHardDiskDrive -VMName $name -Path $diff -ControllerType SCSI -ControllerNumber 0 -ControllerLocation 0
+  Set-VMFirmware -VMName $name -FirstBootDevice (Get-VMHardDiskDrive -VMName $name | Where-Object { $_.Path -eq $diff })
+} else {
+  Remove-Item -LiteralPath $diff -Force -ErrorAction SilentlyContinue
+  New-VHD -Path $diff -ParentPath $base -Differencing | Out-Null
+  if (-not (Test-Path -LiteralPath $data)) { New-VHD -Path $data -SizeBytes %[6]dGB -Dynamic | Out-Null }
+  New-VM -Name $name -Generation 2 -MemoryStartupBytes %[7]dMB -VHDPath $diff -SwitchName '%[8]s' | Out-Null
+  Set-VM -Name $name -ProcessorCount %[9]d -StaticMemory -CheckpointType Disabled -AutomaticCheckpointsEnabled $false -AutomaticStopAction TurnOff -AutomaticStartAction Nothing
+  Add-VMHardDiskDrive -VMName $name -Path $data -ControllerType SCSI
+  Set-VMFirmware -VMName $name -EnableSecureBoot On -SecureBootTemplate MicrosoftUEFICertificateAuthority
+  Set-VMKeyProtector -VMName $name -NewLocalKeyProtector
+  Enable-VMTPM -VMName $name
+  Disable-VMIntegrationService -VMName $name -Name 'Guest Service Interface','Key-Value Pair Exchange'
+  Enable-VMIntegrationService -VMName $name -Name 'Heartbeat','Time Synchronization'
 }
-Start-VM -Name %[1]s`, vmName, st, h.cfg.BaseImage)
+Start-VM -Name $name`, vmName, q(dir), q(base), q(diff), q(data), h.cfg.DataGB, h.cfg.MemoryMB, q(h.cfg.SwitchName), h.cfg.CPUs)
 	if out, err := ps(ctx, script); err != nil {
-		return fmt.Errorf("start VM: %v: %s", err, out)
+		return fmt.Errorf("start the appliance VM: %v: %s", err, out)
 	}
+	h.mu.Lock()
+	h.vmID = ""
+	h.mu.Unlock()
 	return nil
 }
 
+// Stop turns the VM off (no saved memory state on disk).
 func (h *hypervDriver) Stop(ctx context.Context) error {
-	// Turn off (no saved memory state on disk), then discard the differencing disk.
-	script := fmt.Sprintf(`Stop-VM -Name %s -TurnOff -Force; Remove-Item '%s\diff.vhdx' -ErrorAction SilentlyContinue`, vmName, h.cfg.StateDir)
-	_, err := ps(ctx, script)
+	_, err := ps(ctx, fmt.Sprintf(`$v = Get-VM -Name %s -ErrorAction SilentlyContinue; if ($v -and $v.State -ne 'Off') { Stop-VM -Name %s -TurnOff -Force }`, vmName, vmName))
 	return err
 }

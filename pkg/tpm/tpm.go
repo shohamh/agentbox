@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,4 +209,57 @@ func Replay(digests [][32]byte) []byte {
 		pcr = h.Sum(nil)
 	}
 	return pcr
+}
+
+// Conn is an open TPM, a swtpm socket or a kernel device.
+type Conn = transport.TPMCloser
+
+// DeviceTPM speaks raw TPM 2.0 commands to a kernel device such as
+// /dev/tpmrm0 (the Hyper-V virtual TPM, or swtpm behind QEMU's tpm-crb).
+// The device takes one whole command per write and answers one whole
+// response per read.
+type DeviceTPM struct {
+	mu sync.Mutex
+	f  *os.File
+}
+
+func openDevice(path string) (*DeviceTPM, error) {
+	var err error
+	var f *os.File
+	for i := 0; i < 50; i++ {
+		if f, err = os.OpenFile(path, os.O_RDWR, 0); err == nil {
+			return &DeviceTPM{f: f}, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("open TPM device %s: %w", path, err)
+}
+
+func (d *DeviceTPM) Send(cmd []byte) ([]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, err := d.f.Write(cmd); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 8192)
+	n, err := d.f.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
+func (d *DeviceTPM) Close() error { return d.f.Close() }
+
+// Open connects to path: a character device (/dev/tpmrm0) or a swtpm unix socket.
+func Open(path string) (Conn, error) {
+	// Device nodes appear when the driver loads: wait for them rather than
+	// falling back to a unix-socket dial.
+	if strings.HasPrefix(path, "/dev/") {
+		return openDevice(path)
+	}
+	if st, err := os.Stat(path); err == nil && st.Mode()&os.ModeDevice != 0 {
+		return openDevice(path)
+	}
+	return OpenSocket(path)
 }

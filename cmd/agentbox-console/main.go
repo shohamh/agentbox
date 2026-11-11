@@ -60,7 +60,7 @@ func main() {
 	if err := db.Migrate(ctx, pool); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
-	s := &Server{pool: pool, sess: newSessions(), sse: newBroker(),
+	s := &Server{pool: pool, sess: newSessions(pool), sse: newBroker(),
 		ch:            ch.New(env("CLICKHOUSE_URL", "http://clickhouse:8123"), os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), "otel"),
 		ev:            otlp.New(os.Getenv("OTLP_ENDPOINT"), map[string]string{"service.name": "agentbox-console"}, nil),
 		releasesDir:   env("RELEASES_DIR", "/etc/agentbox/releases"),

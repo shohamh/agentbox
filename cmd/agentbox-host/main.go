@@ -50,6 +50,12 @@ type Config struct {
 	// names (test beds): "host:port" -> "address:port". The URL and TLS server
 	// name stay as configured; only the TCP destination changes.
 	HostMap map[string]string `json:"host_map"`
+	// Hyper-V driver settings.
+	SwitchName string `json:"switch_name"` // default "Default Switch"
+	MemoryMB   int    `json:"memory_mb"`   // default 4096
+	CPUs       int    `json:"cpus"`        // default 4
+	DataGB     int    `json:"data_gb"`     // default 20
+	LogFile    string `json:"log_file"`
 }
 
 type host struct {
@@ -59,19 +65,35 @@ type host struct {
 	caPool *x509.CertPool
 }
 
+// onStop runs when the Windows service is asked to stop.
+var onStop func()
+
 func main() {
 	path := "/etc/agentbox/host.json"
 	if len(os.Args) > 1 {
 		path = os.Args[1]
 	}
+	// As a Windows service the process must answer the service manager.
+	if runAsService(func() { serve(path) }) {
+		return
+	}
+	serve(path)
+}
+
+func serve(path string) {
 	var cfg Config
 	b, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatal(err)
 	}
 	// Windows editors and PowerShell 5.1 write a UTF-8 byte-order mark.
-	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("ï»¿")), &cfg); err != nil {
+	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &cfg); err != nil {
 		log.Fatal(err)
+	}
+	if cfg.LogFile != "" {
+		if f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			log.SetOutput(f)
+		}
 	}
 	if cfg.DeviceID == "" {
 		cfg.DeviceID, _ = os.Hostname()
@@ -94,8 +116,18 @@ func main() {
 		h.caPool.AppendCertsFromPEM(pem)
 	}
 	if cfg.Driver != "container" {
-		if err := drv.Start(context.Background()); err != nil {
-			log.Printf("start appliance: %v", err)
+		// Start in the background: the CLI works (and reports) while the VM boots.
+		go func() {
+			if err := drv.Start(context.Background()); err != nil {
+				log.Printf("start appliance: %v", err)
+			}
+		}()
+		onStop = func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := drv.Stop(ctx); err != nil {
+				log.Printf("stop appliance: %v", err)
+			}
 		}
 	}
 	lis, err := hostapi.Listen(cfg.Socket)

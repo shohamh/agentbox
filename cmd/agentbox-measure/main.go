@@ -42,7 +42,7 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "boot":
-		t, err := tpm.OpenSocket(*sock)
+		t, err := tpm.Open(*sock)
 		if err != nil {
 			log.Fatal(err)
 		}

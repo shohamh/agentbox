@@ -1,0 +1,19 @@
+# Hashed at boot and extended into PCR 11, in this order (this file first).
+/usr/local/bin/appliance-boot
+/usr/local/bin/appliance-measure
+/usr/local/bin/agentbox-site
+/usr/local/bin/agentbox-data
+/usr/local/bin/agentbox-manager
+/usr/local/bin/agentbox-measure
+/usr/local/bin/runsc
+/usr/local/bin/envoy
+/usr/local/bin/otelcol-contrib
+/etc/agentbox/appliance.json
+/etc/agentbox/envoy.yaml
+/etc/agentbox/sds-cert.yaml
+/etc/agentbox/sds-ca.yaml
+/etc/agentbox/otelcol.yaml
+/etc/agentbox/policy.pub
+/etc/agentbox/release.json
+/etc/systemd/system/agentbox-appliance.service
+/etc/systemd/system/agentbox-measure.service

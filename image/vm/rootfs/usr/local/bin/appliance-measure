@@ -1,0 +1,10 @@
+#!/bin/sh
+# Measured boot of the appliance userspace: hash every measured file and extend
+# it into PCR 11 of the (virtual) TPM, once per boot. The event log lets the
+# verifier replay the PCR and name any file that differs from the release.
+set -eu
+mkdir -p /run/agentbox
+TPM=/dev/tpmrm0; [ -e "$TPM" ] || TPM=/dev/tpm0
+# The TPM resets its PCRs at every VM boot; refuse to measure twice in one boot.
+if [ -s /run/agentbox/eventlog.json ]; then echo "already measured in this boot"; exit 0; fi
+exec agentbox-measure boot -tpm "$TPM" -log /run/agentbox/eventlog.json
