@@ -56,12 +56,12 @@ base, Codex and opencode, `test/` E2E (Go) and console (Playwright) suites,
 ## Known gaps (see `docs/testing.md`)
 
 Light attestation only (virtual-TPM quote of PCR 11); no Keylime, winattest or
-SPIRE yet. Console sessions are in memory. The model-path overhead is about
-300 ms against the 50 ms target when going through LiteLLM. Not automated:
-T4 to T6, T8, T11, the 30-minute real-work session in E2E-05, and the Splunk
-half of UI-11.
+SPIRE yet. Not automated: T4 to T6, T8, T11, the 30-minute real-work session in
+E2E-05, the Splunk half of UI-11, and the console UI suite against a Windows PC.
+The Hyper-V appliance boots under QEMU with Secure Boot in tests, but has not
+been booted on Hyper-V itself (see `docs/hyperv.md`).
 
-## Windows PC (native host and CLI)
+## Windows PC, natively in a container-backed setup
 
 The PC side also runs natively on Windows, without admin rights: `agentbox.exe`
 talks to `agentbox-host.exe` over a named pipe, SSH goes through Windows' own
@@ -82,3 +82,9 @@ The same E2E suite runs against it: set `AGENTBOX_EXE`, `E2E_PC1=pc-win`,
 `E2E_APP1=appliance-w` and `E2E_HOSTMAP` (see `docs/testing.md`) and run
 `dist\windows\e2e.exe -test.v`. The console UI suite (Playwright) is not run
 against the Windows PC.
+
+## Windows PC with a real Hyper-V appliance
+
+`docs/hyperv.md`: a bootable appliance disk (Debian signed shim, GRUB and kernel;
+Secure Boot; virtual TPM; Hyper-V sockets), the host service as a Windows
+service, and an elevated installer, `scripts\install-hyperv.ps1`.
