@@ -183,6 +183,15 @@ func TestT9_SandboxTokenReplayRefused(t *testing.T) {
 }
 
 func rawHTTP(t *testing.T, svc, host, port, req string) (int, string) {
+	if isNative(svc) {
+		out := nativeHTTP(host, port, req)
+		if m := statusRe.FindStringSubmatch(out); m != nil {
+			var code int
+			fmt.Sscan(m[1], &code)
+			return code, out
+		}
+		return 0, out
+	}
 	script := `exec 3<>/dev/tcp/$1/$2; printf '%b' "$3" >&3; timeout 3 cat <&3`
 	r := dexec(t, svc, 30*time.Second, "", "bash", "-c", script, "x", host, port, req)
 	m := statusRe.FindStringSubmatch(r.Out)
@@ -202,9 +211,9 @@ func TestT10_ModelAPIProxyOnPreviewPort(t *testing.T) {
 	killLoop := `for p in /proc/[0-9]*; do tr '\0' ' ' < $p/cmdline 2>/dev/null | grep -q '%s' && kill ${p#/proc/} 2>/dev/null; done; true`
 	t.Cleanup(func() {
 		sbRun(t, s, 20*time.Second, fmt.Sprintf(killLoop, "http.server 8081"))
-		sh(t, pc1, fmt.Sprintf(killLoop, "agentbox preview"))
+		stopPreviews(t, pc1)
 	})
-	if r := run(30*time.Second, "", "docker", "exec", "-d", cid(t, pc1), "agentbox", "preview", s.Name, "8081", "--listen", "127.0.0.1:18081"); r.Code != 0 {
+	if r := startPreview(t, s, "8081", "127.0.0.1:18081"); r.Code != 0 {
 		t.Fatalf("starting the preview: %s", r.Out)
 	}
 	waitFor(t, 30*time.Second, "the preview to serve the web app", func() (bool, string) {

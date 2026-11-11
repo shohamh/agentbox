@@ -100,3 +100,21 @@ Each is also walked through once by hand by the requester. Test titles start wit
 - `correlator` holds `CLICKHOUSE_URL/USER/PASSWORD`, `permsvc` holds `DATABASE_URL`, `gatekeeper` holds `LITELLM_DATABASE_URL`; the PC containers hold `/etc/agentbox/host.json`, the appliances `/etc/agentbox/appliance.json`.
 - The sandbox images contain `python3`, `codex`, `opencode`, an sshd for `root` accepted with the user's key, and source `/etc/agentbox/env` in ssh sessions or the tests source it themselves.
 - The `sink` service answers `GET /stats` with `{"log_records": n, "by_event": {"<event.name>": n}}` and counts OTLP/HTTP logs by `event.name`.
+
+## Running the E2E suite against a native Windows PC
+
+`scripts/build-windows.sh` produces `dist/windows/e2e.exe`. With the Windows
+host installed (`scripts/install-windows.ps1`), the control plane up, and the
+`windows.yml` overlay applied, run it natively:
+
+```powershell
+$env:AGENTBOX_EXE = "$env:LOCALAPPDATA\Agentbox\bin\agentbox.exe"
+$env:E2E_PC1 = "pc-win"; $env:E2E_APP1 = "appliance-w"; $env:STRICT_MESSAGES = "1"
+$env:E2E_HOSTMAP = "kc.agentbox.corp:8080=127.0.0.1:18180,console.agentbox.corp:18080=127.0.0.1:18080,clickhouse:8123=127.0.0.1:18123"
+dist\windows\e2e.exe -test.v -test.run "^TestE2E_0[1-9]_|^TestE2E_1[1-5]_|^TestT9_|^TestT10_|^TestT12_"
+```
+
+`E2E_HOSTMAP` redirects TCP destinations only (URLs and Host headers are kept),
+because the PC cannot resolve `*.agentbox.corp` without editing its hosts file.
+Steps that ran shell commands on the simulated PC have native variants in
+`test/e2e/native_test.go`.

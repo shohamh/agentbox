@@ -46,6 +46,10 @@ type Config struct {
 	// Test beds only: allow username/password sign-in in place of the device
 	// code flow so suites can run unattended.
 	AllowPasswordGrant bool `json:"allow_password_grant"`
+	// Name resolution overrides for PCs that cannot resolve the corporate
+	// names (test beds): "host:port" -> "address:port". The URL and TLS server
+	// name stay as configured; only the TCP destination changes.
+	HostMap map[string]string `json:"host_map"`
 }
 
 type host struct {
@@ -65,7 +69,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	// Windows editors and PowerShell 5.1 write a UTF-8 byte-order mark.
+	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("ï»¿")), &cfg); err != nil {
 		log.Fatal(err)
 	}
 	if cfg.DeviceID == "" {
@@ -207,8 +212,22 @@ func (h *host) status(w http.ResponseWriter, _ *http.Request) {
 
 // ---------- enrollment ----------
 
+// transport dials through cfg.HostMap.
+func (h *host) transport(tc *tls.Config) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig: tc,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if to, ok := h.cfg.HostMap[addr]; ok {
+				addr = to
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	}
+}
+
 func (h *host) oidcClient() *http.Client {
-	return &http.Client{Timeout: 20 * time.Second}
+	return &http.Client{Timeout: 20 * time.Second, Transport: h.transport(nil)}
 }
 
 func (h *host) tokenEndpoint() string { return strings.TrimRight(h.cfg.OIDCIssuer, "/") + "/protocol/openid-connect/token" }
@@ -330,7 +349,7 @@ func (h *host) finishEnroll(w http.ResponseWriter, r *http.Request, token string
 		CARoot     string `json:"ca_root"`
 		Error      string `json:"error"`
 	}
-	c := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: h.caPool}}}
+	c := &http.Client{Timeout: 30 * time.Second, Transport: h.transport(&tls.Config{RootCAs: h.caPool})}
 	b, _ := json.Marshal(req)
 	hr, err := c.Post(h.cfg.EnrollURL+"/api/v1/enroll", "application/json", bytes.NewReader(b))
 	if err != nil {
@@ -357,4 +376,3 @@ func (h *host) finishEnroll(w http.ResponseWriter, r *http.Request, token string
 	out(w, 200, map[string]any{"user": resp.User, "device_id": h.cfg.DeviceID, "identity": identity.DeviceID(h.cfg.DeviceID, resp.User)})
 }
 
-var _ = net.Dial

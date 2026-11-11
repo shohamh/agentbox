@@ -18,8 +18,11 @@ import (
 	"time"
 )
 
-const (
-	pc1, app1, user1 = "pc-1", "appliance-1", "alice"
+// The first PC under test defaults to the simulated pc-1. To run the same
+// suite against a native PC (for example Windows, "pc-win"), set E2E_PC1 and
+// E2E_APP1 (the appliance container serving it) and AGENTBOX_EXE.
+var (
+	pc1, app1, user1 = envOr("E2E_PC1", "pc-1"), envOr("E2E_APP1", "appliance-1"), envOr("E2E_USER1", "alice")
 	pc2, app2, user2 = "pc-2", "appliance-2", "dave"
 )
 
@@ -178,7 +181,7 @@ func TestE2E_05_InteractiveSessions(t *testing.T) {
 	if r := cli(t, pc1, "code", s.Name); r.Code != 0 {
 		t.Fatalf("agentbox code: %s", r.Out)
 	}
-	r := sh(t, pc1, `ssh -F "$HOME/.ssh/agentbox_config" agentbox-`+s.Name+` 'echo remote-ssh-ok; cd /workspace && pwd'`)
+	r := pcSSH(t, pc1, s.Name, "echo remote-ssh-ok; cd /workspace && pwd")
 	if r.Code != 0 || !strings.Contains(r.Out, "remote-ssh-ok") || !strings.Contains(r.Out, "/workspace") {
 		t.Fatalf("ssh through the generated Remote-SSH entry failed (%d): %s", r.Code, r.Out)
 	}
@@ -255,6 +258,9 @@ rm -f $D /tmp/t.re.sh /tmp/t.pat.sh
 // scanFor runs the key search in a container with the script on disk, so the
 // searched-for strings never appear in a process command line.
 func scanFor(t *testing.T, svc, master string, viaSandbox *sbInfo) string {
+	if viaSandbox == nil && isNative(svc) {
+		return nativeScan(t, master)
+	}
 	script := hitScript
 	if master != "" {
 		script = strings.Replace(script, "MASTER_PLACEHOLDER", "printf '%s\\n' '"+master+"' > /tmp/t.pat.sh\necho \"MASTER_HITS=$(grep -c -F -f /tmp/t.pat.sh $D)\"", 1)

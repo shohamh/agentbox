@@ -60,3 +60,25 @@ SPIRE yet. Console sessions are in memory. The model-path overhead is about
 300 ms against the 50 ms target when going through LiteLLM. Not automated:
 T4 to T6, T8, T11, the 30-minute real-work session in E2E-05, and the Splunk
 half of UI-11.
+
+## Windows PC (native host and CLI)
+
+The PC side also runs natively on Windows, without admin rights: `agentbox.exe`
+talks to `agentbox-host.exe` over a named pipe, SSH goes through Windows' own
+OpenSSH, and the appliance runs in Docker Desktop (a Hyper-V VM is the
+production path and needs elevation plus a bootable appliance image, which this
+repo does not build yet).
+
+```powershell
+bash scripts/build-windows.sh                       # dist\windows\{agentbox,agentbox-host,e2e}.exe
+docker compose -p agentbox -f deploy/compose/docker-compose.yml -f deploy/compose/appliance.yml `
+  -f deploy/compose/windows.yml --env-file deploy/compose/.secrets/compose.env up -d console clickhouse appliance-w
+scripts\install-windows.ps1                         # installs to %LOCALAPPDATA%\Agentbox, starts the host service
+& "$env:LOCALAPPDATA\Agentbox\bin\agentbox.exe" status
+scripts\install-windows.ps1 -Uninstall              # remove it again
+```
+
+The same E2E suite runs against it: set `AGENTBOX_EXE`, `E2E_PC1=pc-win`,
+`E2E_APP1=appliance-w` and `E2E_HOSTMAP` (see `docs/testing.md`) and run
+`dist\windows\e2e.exe -test.v`. The console UI suite (Playwright) is not run
+against the Windows PC.

@@ -19,6 +19,11 @@
       "device": "pc-d",
       "user": "alice",
       "os": "linux"
+    },
+    {
+      "device": "pc-win",
+      "user": "alice",
+      "os": "windows"
     }
   ],
   "users": [

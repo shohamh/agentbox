@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -42,6 +43,30 @@ var (
 	perfStrict  = os.Getenv("PERF_STRICT") == "1"
 	msgStrict   = os.Getenv("STRICT_MESSAGES") == "1"
 )
+
+// E2E_HOSTMAP ("host:port=addr:port,...") redirects TCP destinations while
+// keeping URLs and Host headers, for a test runner that cannot resolve the
+// *.agentbox.corp names (for example on a Windows PC outside the Compose network).
+func init() {
+	m := map[string]string{}
+	for _, kv := range strings.Split(os.Getenv("E2E_HOSTMAP"), ",") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(kv), "="); ok {
+			m[k] = v
+		}
+	}
+	if len(m) == 0 {
+		return
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	d := &net.Dialer{Timeout: 30 * time.Second}
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if to, ok := m[addr]; ok {
+			addr = to
+		}
+		return d.DialContext(ctx, network, addr)
+	}
+	http.DefaultTransport = tr
+}
 
 // ---------- docker access ----------
 
@@ -121,6 +146,11 @@ func running(svc string) bool {
 // dexec runs a command in a service container. stdin, when set, is piped in.
 func dexec(t testing.TB, svc string, timeout time.Duration, stdin string, args ...string) Result {
 	t.Helper()
+	// A native PC (AGENTBOX_EXE set and svc is the PC under test) runs the CLI
+	// on this machine instead of inside a simulated-PC container.
+	if exe := os.Getenv("AGENTBOX_EXE"); exe != "" && svc == pc1 && len(args) > 0 && args[0] == "agentbox" {
+		return run(timeout, stdin, exe, args[1:]...)
+	}
 	a := []string{"exec"}
 	if stdin != "" {
 		a = append(a, "-i")

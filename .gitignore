@@ -11,3 +11,4 @@ test/results-failed-run*/
 image/.build/
 image/tools/*.tmp
 test/results/
+dist/

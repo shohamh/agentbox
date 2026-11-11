@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -322,8 +323,12 @@ func sshArgs(sb string) ([]string, error) {
 		return nil, err
 	}
 	self, _ := os.Executable()
-	return []string{"-i", priv, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-		"-o", fmt.Sprintf("ProxyCommand=%s ssh-proxy %s", self, sb), "root@" + sb}, nil
+	null := "/dev/null"
+	if runtime.GOOS == "windows" {
+		null = "NUL"
+	}
+	return []string{"-i", priv, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=" + null, "-o", "LogLevel=ERROR",
+		"-o", fmt.Sprintf("ProxyCommand=\"%s\" ssh-proxy %s", self, sb), "root@" + sb}, nil
 }
 
 func shell(args []string) error {

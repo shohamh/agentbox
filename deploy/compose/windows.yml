@@ -1,0 +1,22 @@
+# Attaches a native Windows PC to the test bed. The PC runs agentbox-host.exe
+# and agentbox.exe on Windows (see scripts/install-windows.ps1); its appliance
+# runs here, in Docker Desktop's Linux VM, and is reached on 127.0.0.1:17000.
+# Production uses a Hyper-V VM and Hyper-V sockets instead of this port.
+#   docker compose -p agentbox -f deploy/compose/docker-compose.yml \
+#     -f deploy/compose/appliance.yml -f deploy/compose/windows.yml up -d appliance-w console clickhouse
+services:
+  console:
+    ports: ["127.0.0.1:18443:8443"]       # enrollment and attestation (TLS)
+  clickhouse:
+    ports: ["127.0.0.1:18123:8123"]       # so a native test runner can read events
+  appliance-w:
+    image: agentbox-appliance:prod
+    privileged: true
+    restart: always
+    stop_grace_period: 20s
+    environment: [AGENTBOX_CONTROL_LISTEN=tcp://0.0.0.0:7000]
+    volumes: [appliance-w-data:/data]
+    ports: ["127.0.0.1:17000:7000"]       # host-to-appliance channel (test bed only)
+    networks: [agentbox]
+volumes:
+  appliance-w-data:
