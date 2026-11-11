@@ -1,0 +1,129 @@
+# Front gateway: mutual TLS from appliances (client certificates issued by
+# step-ca), ext_authz to gatekeeper, which attaches the LiteLLM key, then LiteLLM.
+admin:
+  address: {socket_address: {address: 127.0.0.1, port_value: 9901}}
+static_resources:
+  listeners:
+  - name: gateway
+    address: {socket_address: {address: 0.0.0.0, port_value: 443}}
+    filter_chains:
+    - transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          require_client_certificate: true
+          common_tls_context:
+            alpn_protocols: ["h2", "http/1.1"]
+            tls_certificates:
+            - certificate_chain: {filename: /pki/gw.crt}
+              private_key: {filename: /pki/gw.key}
+            validation_context:
+              trusted_ca: {filename: /pki/ca.crt}
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: gateway
+          codec_type: AUTO
+          generate_request_id: true
+          stream_idle_timeout: 0s
+          request_timeout: 0s
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                json_format:
+                  time: "%START_TIME%"
+                  principal: "%DOWNSTREAM_PEER_URI_SAN%"
+                  method: "%REQ(:METHOD)%"
+                  path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                  status: "%RESPONSE_CODE%"
+                  duration_ms: "%DURATION%"
+                  request_id: "%REQ(X-REQUEST-ID)%"
+                  sandbox: "%REQ(X-AGENTBOX-SANDBOX)%"
+                  denied: "%RESP(X-AGENTBOX-DENIED)%"
+          route_config:
+            name: all
+            virtual_hosts:
+            - name: litellm
+              domains: ["*"]
+              routes:
+              - match: {prefix: "/"}
+                route: {cluster: litellm, timeout: 0s}
+          # Clear errors instead of empty bodies. Gatekeeper's own denials (kill
+          # switch, budget, revoked, ...) carry their own body and are never
+          # 502; an ext_authz failure (gatekeeper down) is mapped from 502.
+          local_reply_config:
+            mappers:
+            - filter:
+                status_code_filter: {comparison: {op: EQ, value: {default_value: 502, runtime_key: abx.authz_error}}}
+              status_code: 503
+              headers_to_add:
+              - header: {key: x-agentbox-denied, value: model_service_unreachable}
+              body_format_override:
+                json_format:
+                  error:
+                    message: "Agentbox: model service unreachable - the authorization service is not responding. Your sandboxes keep running; model calls resume automatically when it is back."
+                    type: model_service_unreachable
+                    code: model_service_unreachable
+            - filter:
+                response_flag_filter: {flags: [UF, UC, UH, URX, NR, UT, UR]}
+              headers_to_add:
+              - header: {key: x-agentbox-denied, value: model_service_unreachable}
+              body_format_override:
+                json_format:
+                  error:
+                    message: "Agentbox: model service unreachable - the model server is not responding. Your sandboxes keep running; model calls resume automatically when it is back."
+                    type: model_service_unreachable
+                    code: model_service_unreachable
+          http_filters:
+          - name: envoy.filters.http.lua
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+              default_source_code:
+                inline_string: |
+                  -- W3C trace context: one trace per model request, derived from x-request-id
+                  function envoy_on_request(handle)
+                    local h = handle:headers()
+                    if h:get("traceparent") == nil then
+                      local tid = string.gsub(h:get("x-request-id") or "", "-", "")
+                      if string.len(tid) == 32 then
+                        h:add("traceparent", "00-" .. tid .. "-" .. string.sub(tid, 1, 16) .. "-01")
+                      end
+                    end
+                  end
+          - name: envoy.filters.http.ext_authz
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+              transport_api_version: V3
+              failure_mode_allow: false
+              status_on_error: {code: BadGateway}
+              with_request_body: {max_request_bytes: 1048576, allow_partial_message: true}
+              grpc_service:
+                envoy_grpc: {cluster_name: gatekeeper}
+                timeout: 5s
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: gatekeeper
+    type: STRICT_DNS
+    connect_timeout: 3s
+    typed_extension_protocol_options:
+      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+        "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+        explicit_http_config: {http2_protocol_options: {}}
+    load_assignment:
+      cluster_name: gatekeeper
+      endpoints:
+      - lb_endpoints:
+        - endpoint: {address: {socket_address: {address: gatekeeper, port_value: 9191}}}
+  - name: litellm
+    type: STRICT_DNS
+    connect_timeout: 3s
+    load_assignment:
+      cluster_name: litellm
+      endpoints:
+      - lb_endpoints:
+        - endpoint: {address: {socket_address: {address: litellm, port_value: 4000}}}

@@ -1,0 +1,81 @@
+# Appliance OpenTelemetry Collector. Receives OTLP from the manager, from the
+# sandboxes (through the manager's OTLP proxy, which stamps the sandbox ID into
+# the X-Agentbox-Sandbox header) and tails Envoy access logs. Every record gets
+# user, device and image, and travels over mutual TLS to the central tier
+# through a disk-backed queue, so a control-plane outage loses nothing.
+extensions:
+  file_storage/queue:
+    directory: /data/otelq
+    create_directory: true
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+        include_metadata: true
+  filelog/envoy:
+    include: [/var/log/agentbox/envoy-access.json]
+    start_at: end
+    operators:
+    - type: json_parser
+      timestamp:
+        parse_from: attributes.time
+        layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+    - type: add
+      field: attributes["event.name"]
+      value: envoy.access
+    - type: move
+      from: attributes.sandbox
+      to: attributes["agentbox.sandbox"]
+
+processors:
+  resource/identity:
+    attributes:
+    - { key: agentbox.user, value: "${env:AGENTBOX_USER}", action: insert }
+    - { key: agentbox.device, value: "${env:AGENTBOX_DEVICE}", action: insert }
+    - { key: agentbox.image, value: "${env:AGENTBOX_IMAGE}", action: insert }
+  resource/sandbox:
+    attributes:
+    - { key: agentbox.sandbox, from_context: x-agentbox-sandbox, action: upsert }
+  batch:
+    timeout: 1s
+
+exporters:
+  otlphttp/central:
+    endpoint: https://tel.agentbox.corp:4318
+    tls:
+      ca_file: /run/agentbox/certs/ca.crt
+      cert_file: /run/agentbox/certs/appliance.crt
+      key_file: /run/agentbox/certs/appliance.key
+      reload_interval: 30s
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+      queue_size: 100000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+service:
+  extensions: [file_storage/queue]
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: warn
+  pipelines:
+    logs:
+      receivers: [otlp, filelog/envoy]
+      processors: [resource/sandbox, resource/identity, batch]
+      exporters: [otlphttp/central]
+    traces:
+      receivers: [otlp]
+      processors: [resource/sandbox, resource/identity, batch]
+      exporters: [otlphttp/central]
+    metrics:
+      receivers: [otlp]
+      processors: [resource/sandbox, resource/identity, batch]
+      exporters: [otlphttp/central]

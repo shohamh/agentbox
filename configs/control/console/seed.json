@@ -1,0 +1,94 @@
+{
+  "inventory": [
+    {
+      "device": "pc-1",
+      "user": "alice",
+      "os": "linux"
+    },
+    {
+      "device": "pc-2",
+      "user": "dave",
+      "os": "linux"
+    },
+    {
+      "device": "pc-t",
+      "user": "alice",
+      "os": "linux"
+    },
+    {
+      "device": "pc-d",
+      "user": "alice",
+      "os": "linux"
+    }
+  ],
+  "users": [
+    {
+      "name": "alice",
+      "email": "alice@agentbox.corp",
+      "group": "default",
+      "tier": 1,
+      "budget_usd": 50
+    },
+    {
+      "name": "dave",
+      "email": "dave@agentbox.corp",
+      "group": "default",
+      "tier": 1,
+      "budget_usd": 50
+    }
+  ],
+  "groups": {
+    "default": {
+      "models": [
+        "deepseek-v3",
+        "glm-4"
+      ],
+      "egress": [
+        "git.agentbox.corp"
+      ],
+      "images": [
+        "base",
+        "codex",
+        "opencode"
+      ],
+      "tier_cap": 3,
+      "limits": {
+        "cpus": 2,
+        "memory_mb": 2048,
+        "pids": 512
+      },
+      "rate_limit_rpm": 120,
+      "mounts": []
+    }
+  },
+  "catalog": {
+    "egress": {
+      "auto": [
+        "pypi.agentbox.corp",
+        "npm.agentbox.corp",
+        "proxy.golang.agentbox.corp",
+        "docs.agentbox.corp"
+      ],
+      "flagged": [
+        "*.lab.agentbox.corp",
+        "artifacts.agentbox.corp"
+      ],
+      "never": [
+        "api.openai.com",
+        "api.anthropic.com",
+        "*.openai.com",
+        "generativelanguage.googleapis.com"
+      ]
+    },
+    "project_roots": [
+      "/home/*/src/*",
+      "/workspace/*"
+    ],
+    "models": [
+      "deepseek-v3",
+      "glm-4",
+      "small"
+    ]
+  },
+  "images_file": "/etc/agentbox/images.json"
+}

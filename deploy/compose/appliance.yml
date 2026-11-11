@@ -1,0 +1,107 @@
+# Appliances and simulated PCs for the container test bed. Merge with the
+# control plane:
+#   docker compose -p agentbox -f deploy/compose/docker-compose.yml -f deploy/compose/appliance.yml up -d
+# Images come from scripts/release.sh. Each PC pairs with its appliance over a
+# private internal network that stands in for vsock; the appliance and the PC
+# are also on the corporate network `agentbox`. Appliances are privileged
+# (gVisor, network namespaces, nftables) and restart on exit: a recycle is a
+# process exit, so the container runtime "reboots" it from the read-only image.
+x-appliance: &appliance
+  privileged: true
+  restart: always
+  stop_grace_period: 20s
+
+x-pc: &pc
+  image: agentbox-pc:dev
+  restart: unless-stopped
+
+services:
+  corp-services:
+    image: agentbox-corp:dev
+    restart: unless-stopped
+    networks:
+      agentbox:
+        aliases: [git.agentbox.corp, pypi.agentbox.corp, npm.agentbox.corp, docs.agentbox.corp, blocked.agentbox.corp]
+
+  appliance-1:
+    <<: *appliance
+    image: agentbox-appliance:prod
+    environment: [AGENTBOX_CONTROL_LISTEN=tcp://10.201.1.2:7000]
+    volumes: [appliance-1-data:/data]
+    networks:
+      agentbox: {}
+      pc1net: {ipv4_address: 10.201.1.2}
+  pc-1:
+    <<: *pc
+    depends_on: [appliance-1]
+    environment: {DEVICE_ID: pc-1, APPLIANCE_ADDR: "10.201.1.2:7000", CA_FINGERPRINT: "${STEPCA_FINGERPRINT:-}"}
+    networks:
+      agentbox: {}
+      pc1net: {ipv4_address: 10.201.1.3}
+
+  appliance-2:
+    <<: *appliance
+    image: agentbox-appliance:prod
+    environment: [AGENTBOX_CONTROL_LISTEN=tcp://10.201.2.2:7000]
+    volumes: [appliance-2-data:/data]
+    networks:
+      agentbox: {}
+      pc2net: {ipv4_address: 10.201.2.2}
+  pc-2:
+    <<: *pc
+    depends_on: [appliance-2]
+    environment: {DEVICE_ID: pc-2, APPLIANCE_ADDR: "10.201.2.2:7000", CA_FINGERPRINT: "${STEPCA_FINGERPRINT:-}"}
+    networks:
+      agentbox: {}
+      pc2net: {ipv4_address: 10.201.2.3}
+
+  # Tampered image (T1, E2E-10): attestation must fail and model access be refused.
+  appliance-t:
+    <<: *appliance
+    image: agentbox-appliance:tampered
+    profiles: [tamper]
+    environment: [AGENTBOX_CONTROL_LISTEN=tcp://10.201.3.2:7000]
+    volumes: [appliance-t-data:/data]
+    networks:
+      agentbox: {}
+      pctnet: {ipv4_address: 10.201.3.2}
+  pc-t:
+    <<: *pc
+    profiles: [tamper]
+    depends_on: [appliance-t]
+    environment: {DEVICE_ID: pc-t, APPLIANCE_ADDR: "10.201.3.2:7000", CA_FINGERPRINT: "${STEPCA_FINGERPRINT:-}"}
+    networks:
+      agentbox: {}
+      pctnet: {ipv4_address: 10.201.3.3}
+
+  # Dev flavor (T3): a different measurement the production verifier never accepts.
+  appliance-d:
+    <<: *appliance
+    image: agentbox-appliance:dev
+    profiles: [dev]
+    environment: [AGENTBOX_CONTROL_LISTEN=tcp://10.201.4.2:7000]
+    volumes: [appliance-d-data:/data]
+    networks:
+      agentbox: {}
+      pcdnet: {ipv4_address: 10.201.4.2}
+  pc-d:
+    <<: *pc
+    profiles: [dev]
+    depends_on: [appliance-d]
+    environment: {DEVICE_ID: pc-d, APPLIANCE_ADDR: "10.201.4.2:7000", CA_FINGERPRINT: "${STEPCA_FINGERPRINT:-}"}
+    networks:
+      agentbox: {}
+      pcdnet: {ipv4_address: 10.201.4.3}
+
+networks:
+  agentbox: {}
+  pc1net: {internal: true, ipam: {config: [{subnet: 10.201.1.0/24}]}}
+  pc2net: {internal: true, ipam: {config: [{subnet: 10.201.2.0/24}]}}
+  pctnet: {internal: true, ipam: {config: [{subnet: 10.201.3.0/24}]}}
+  pcdnet: {internal: true, ipam: {config: [{subnet: 10.201.4.0/24}]}}
+
+volumes:
+  appliance-1-data:
+  appliance-2-data:
+  appliance-t-data:
+  appliance-d-data:

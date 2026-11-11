@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+# Builds every Agentbox Go binary once. Other images copy from the result:
+#   docker build -f Dockerfile.bins -t agentbox-bins:dev .   (scripts/build-bins.sh)
+#   COPY --from=agentbox-bins:dev /bin/agentbox-manager /usr/local/bin/
+FROM golang:1.27-bookworm AS build
+ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out && go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/...
+
+FROM scratch AS bins
+COPY --from=build /out/ /bin/

@@ -1,0 +1,14 @@
+{
+  "name": "agentbox-ui-tests",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.0",
+    "@types/node": "22.10.0",
+    "typescript": "5.6.3"
+  }
+}

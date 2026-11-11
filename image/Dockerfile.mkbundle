@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1
+# Test helper: builds image/tools/mkbundle (signed state.json for image tests).
+FROM golang:1.27-bookworm AS build
+ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build go build -o /mkbundle ./image/tools/mkbundle
+FROM scratch
+COPY --from=build /mkbundle /mkbundle

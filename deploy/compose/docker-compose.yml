@@ -1,0 +1,396 @@
+# Agentbox control plane (proof of concept): one host, no bind mounts.
+#
+#   scripts/up.sh                       build, bootstrap secrets, start, wait healthy
+#   docker compose -f deploy/compose/docker-compose.yml --env-file deploy/compose/.secrets/compose.env \
+#       --profile grafana up -d grafana  # optional dashboards (extra ~150 MB)
+#
+# Hostnames match production (PCs need no reconfiguration when the control
+# plane moves): everything below agentbox.corp resolves on the `agentbox` network.
+name: agentbox
+
+x-go: &go
+  restart: unless-stopped
+  networks: [agentbox]
+
+x-build-go: &build-go
+  context: ../..
+  dockerfile: deploy/compose/go-service.Dockerfile
+
+services:
+  postgres:
+    build: {context: ../.., dockerfile: deploy/compose/postgres.Dockerfile}
+    image: agentbox/postgres:dev
+    restart: unless-stopped
+    networks: [agentbox]
+    environment:
+      POSTGRES_USER: agentbox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: agentbox
+    command: ["postgres", "-c", "shared_buffers=48MB", "-c", "max_connections=150", "-c", "synchronous_commit=off"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U agentbox -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  clickhouse:
+    build: {context: ../.., dockerfile: deploy/compose/clickhouse.Dockerfile}
+    image: agentbox/clickhouse:dev
+    restart: unless-stopped
+    networks: [agentbox]
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: agentbox
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes: [chdata:/var/lib/clickhouse]
+    ulimits: {nofile: {soft: 262144, hard: 262144}}
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  keycloak:
+    build: {context: ../.., dockerfile: deploy/compose/keycloak.Dockerfile}
+    image: agentbox/keycloak:dev
+    restart: unless-stopped
+    networks:
+      agentbox: {aliases: [kc.agentbox.corp]}
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+    ports: ["127.0.0.1:18180:8080"]
+    mem_limit: 700m
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 5s
+      timeout: 4s
+      retries: 60
+      start_period: 40s
+
+  stepca:
+    build: {context: ../.., dockerfile: deploy/compose/stepca.Dockerfile}
+    image: agentbox/stepca:dev
+    restart: unless-stopped
+    networks:
+      agentbox: {aliases: [ca.agentbox.corp]}
+    volumes: [stepca:/home/step, secrets:/secrets:ro]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "step ca health --ca-url=https://localhost:9000 --root=/home/step/certs/root_ca.crt | grep -q ok"]
+      interval: 5s
+      timeout: 4s
+      retries: 40
+      start_period: 5s
+
+  certinit:
+    <<: *go
+    build:
+      <<: *build-go
+      args: {BIN: certinit}
+    image: agentbox/certinit:dev
+    restart: "no"
+    command:
+      - -ca-url=https://ca.agentbox.corp:9000
+      - -root=/stepca/certs/root_ca.crt
+      - -password-file=/secrets/stepca_password
+      - -out=/pki
+      - -cert=enroll=enroll.agentbox.corp,console.agentbox.corp
+      - -cert=permsvc=permsvc.agentbox.corp
+      - -cert=gw=gw.agentbox.corp
+      - -cert=tel=tel.agentbox.corp
+    volumes: [stepca:/stepca:ro, secrets:/secrets:ro, pki:/pki]
+    depends_on:
+      stepca: {condition: service_healthy}
+
+  mockllm:
+    <<: *go
+    build:
+      <<: *build-go
+      args: {BIN: mockllm}
+    image: agentbox/mockllm:dev
+    environment: {LISTEN: ":8000"}
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  litellm:
+    build: {context: ../.., dockerfile: deploy/compose/litellm.Dockerfile}
+    image: agentbox/litellm:dev
+    restart: unless-stopped
+    networks: [agentbox]
+    environment:
+      DATABASE_URL: postgresql://agentbox:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
+    volumes: [secrets:/secrets:ro]
+    mem_limit: 900m
+    depends_on:
+      postgres: {condition: service_healthy}
+      mockllm: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3)\""]
+      interval: 8s
+      timeout: 5s
+      retries: 40
+      start_period: 90s
+
+  # Creates the reviewer's own LiteLLM virtual key (glm-4 only) with the master key.
+  litellm-init:
+    image: agentbox-base:dev
+    restart: "no"
+    networks: [agentbox]
+    volumes: [secrets:/secrets:ro]
+    depends_on:
+      litellm: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        MK=$$(cat /secrets/litellm_master_key); RK=$$(cat /secrets/reviewer_key)
+        code=$$(curl -s -o /tmp/out -w '%{http_code}' -X POST http://litellm:4000/key/generate \
+          -H "Authorization: Bearer $$MK" -H 'Content-Type: application/json' \
+          -d "{\"key\":\"$$RK\",\"key_alias\":\"abx-reviewer\",\"models\":[\"glm-4\"],\"user_id\":\"agentbox-reviewer\"}")
+        if [ "$$code" = 200 ]; then echo "reviewer key created"
+        elif grep -qiE 'already|duplicate|unique' /tmp/out; then echo "reviewer key already exists"
+        else echo "key/generate failed ($$code)"; cat /tmp/out; exit 1; fi
+
+  gatekeeper:
+    <<: *go
+    build:
+      <<: *build-go
+      args: {BIN: gatekeeper}
+    image: agentbox/gatekeeper:dev
+    environment:
+      DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
+      LITELLM_DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/litellm?sslmode=disable
+      LITELLM_URL: http://litellm:4000
+      LITELLM_MASTER_KEY_FILE: /secrets/litellm_master_key
+      OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
+    volumes: [secrets:/secrets:ro]
+    mem_limit: 128m
+    depends_on:
+      postgres: {condition: service_healthy}
+      litellm: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8082/"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  front-envoy:
+    build: {context: ../.., dockerfile: deploy/compose/envoy.Dockerfile}
+    image: agentbox/front-envoy:dev
+    restart: unless-stopped
+    networks:
+      agentbox: {aliases: [gw.agentbox.corp]}
+    volumes: [pki:/pki:ro]
+    mem_limit: 128m
+    depends_on:
+      certinit: {condition: service_completed_successfully}
+      gatekeeper: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/443'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  otel-gateway:
+    build: {context: ../.., dockerfile: deploy/compose/otel.Dockerfile}
+    image: agentbox/otel-gateway:dev
+    restart: unless-stopped
+    networks:
+      agentbox: {aliases: [tel.agentbox.corp]}
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes: [pki:/pki:ro, collector:/dynamic]
+    mem_limit: 300m
+    depends_on:
+      certinit: {condition: service_completed_successfully}
+      clickhouse: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:13133/"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+  permsvc:
+    <<: *go
+    build:
+      <<: *build-go
+      args: {BIN: permsvc}
+    image: agentbox/permsvc:dev
+    networks:
+      agentbox: {aliases: [permsvc.agentbox.corp]}
+    environment:
+      DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
+      POLICY_KEY_FILE: /secrets/policy.key
+      CLIENT_CA_FILE: /pki/ca.crt
+      TLS_CERT_FILE: /pki/permsvc.crt
+      TLS_KEY_FILE: /pki/permsvc.key
+      OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
+    volumes: [secrets:/secrets:ro, pki:/pki:ro]
+    mem_limit: 128m
+    depends_on:
+      postgres: {condition: service_healthy}
+      certinit: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8081/"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  reviewer:
+    <<: *go
+    build:
+      <<: *build-go
+      args: {BIN: reviewer}
+    image: agentbox/reviewer:dev
+    environment:
+      DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
+      LITELLM_URL: http://litellm:4000
+      REVIEWER_KEY_FILE: /secrets/reviewer_key
+      OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
+    volumes: [secrets:/secrets:ro]
+    mem_limit: 64m
+    depends_on:
+      postgres: {condition: service_healthy}
+      litellm-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8083/"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  correlator:
+    <<: *go
+    build:
+      <<: *build-go
+      args: {BIN: correlator}
+    image: agentbox/correlator:dev
+    environment:
+      DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: agentbox
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
+    mem_limit: 64m
+    depends_on:
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8084/"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  console:
+    build: {context: ../.., dockerfile: deploy/compose/console.Dockerfile}
+    image: agentbox/console:dev
+    restart: unless-stopped
+    networks:
+      agentbox: {aliases: [console.agentbox.corp, enroll.agentbox.corp]}
+    environment:
+      DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
+      LITELLM_DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/litellm?sslmode=disable
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: agentbox
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
+      RELEASES_DIR: /etc/agentbox/releases
+      COLLECTOR_DYNAMIC_CONFIG: /dynamic/exporters.yaml
+      SEED_FILE: /etc/agentbox/seed.json
+      RELEASE_PUBKEY_FILE: /secrets/release.pub
+      STEPCA_URL: https://ca.agentbox.corp:9000
+      STEPCA_ROOT_FILE: /pki/ca.crt
+      STEPCA_PROVISIONER: agentbox
+      STEPCA_PASSWORD_FILE: /secrets/stepca_password
+      TLS_CERT_FILE: /pki/enroll.crt
+      TLS_KEY_FILE: /pki/enroll.key
+      LISTEN: ":18080"
+      ENROLL_LISTEN: ":8443"
+      OIDC_PUBLIC_ISSUER: http://kc.agentbox.corp:8080/realms/agentbox
+      OIDC_INTERNAL_ISSUER: http://kc.agentbox.corp:8080/realms/agentbox
+      OIDC_CLIENT_ID: agentbox-console
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_REDIRECT_URL: http://console.agentbox.corp:18080/auth/callback
+    ports: ["127.0.0.1:18080:18080"]
+    volumes: [secrets:/secrets:ro, pki:/pki:ro, releases:/etc/agentbox/releases, collector:/dynamic]
+    mem_limit: 192m
+    depends_on:
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+      stepca: {condition: service_healthy}
+      certinit: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:18080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    networks:
+      agentbox: {aliases: [registry.agentbox.corp]}
+    environment: {REGISTRY_STORAGE_DELETE_ENABLED: "true"}
+    volumes: [registry:/var/lib/registry]
+    ports: ["127.0.0.1:15000:5000"]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5000/v2/ >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Stand-in for Splunk HEC and another OTLP backend (UI-11).
+  sink:
+    <<: *go
+    build:
+      <<: *build-go
+      args: {BIN: sink}
+    image: agentbox/sink:dev
+    networks:
+      agentbox: {aliases: [sink.agentbox.corp]}
+    mem_limit: 48m
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:4318/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    profiles: [grafana]
+    build: {context: ../.., dockerfile: deploy/compose/grafana.Dockerfile}
+    image: agentbox/grafana:dev
+    restart: unless-stopped
+    networks: [agentbox]
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports: ["127.0.0.1:13000:3000"]
+    mem_limit: 192m
+    depends_on:
+      clickhouse: {condition: service_healthy}
+
+networks:
+  agentbox:
+    name: agentbox
+
+volumes:
+  secrets: {name: agentbox_secrets, external: true}
+  pki: {name: agentbox_pki}
+  stepca: {name: agentbox_stepca}
+  releases: {name: agentbox_releases}
+  collector: {name: agentbox_collector}
+  pgdata: {name: agentbox_pgdata}
+  chdata: {name: agentbox_chdata}
+  registry: {name: agentbox_registry}

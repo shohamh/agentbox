@@ -1,0 +1,30 @@
+model = "deepseek-v3"
+model_provider = "agentbox"
+sandbox_mode = "danger-full-access"   # the gVisor sandbox is the boundary
+approval_policy = "never"
+check_for_update_on_startup = false
+
+[model_providers.agentbox]
+name = "Agentbox"
+base_url = "http://llm.agentbox:4000/v1"
+env_key = "AGENTBOX_TOKEN"            # per-sandbox token, set by agentbox-manager
+wire_api = "responses"                # LiteLLM bridges the Responses API to vLLM
+
+[otel]
+environment = "agentbox"
+exporter = { otlp-http = { endpoint = "http://otel.agentbox:4318/v1/logs", protocol = "binary" } }
+log_user_prompt = true                # stays inside the org; needed for review
+
+# Offline: no phone-home. Without these, each run tries chatgpt.com (curated
+# plugins, metrics at ab.chatgpt.com) and github.com; egress policy blocks them
+# but they would raise egress alerts on every run.
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[features]
+plugins = false
+apps = false
+remote_models = false

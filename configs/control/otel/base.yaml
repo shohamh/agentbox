@@ -1,0 +1,64 @@
+# Central OpenTelemetry Collector tier. Appliances send OTLP over mutual TLS on
+# 4318; control-plane services send plain OTLP on 4319 (internal network only).
+# The console writes /dynamic/exporters.yaml (Splunk HEC, otlphttp ...), which
+# is merged over this file; run.sh restarts the collector when it changes.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+receivers:
+  otlp/mtls:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        tls:
+          cert_file: /pki/tel.crt
+          key_file: /pki/tel.key
+          client_ca_file: /pki/ca.crt
+  otlp/internal:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4319
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 160
+  batch:
+    timeout: 1s
+    send_batch_size: 500
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: agentbox
+    password: ${env:CLICKHOUSE_PASSWORD}
+    create_schema: true
+    ttl: 720h
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      queue_size: 5000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 20s
+      max_elapsed_time: 0s
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: warn
+  pipelines:
+    logs:
+      receivers: [otlp/mtls, otlp/internal]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse]
+    traces:
+      receivers: [otlp/mtls, otlp/internal]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse]
+    metrics:
+      receivers: [otlp/mtls, otlp/internal]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse]

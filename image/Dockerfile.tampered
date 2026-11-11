@@ -1,0 +1,5 @@
+# Production image with one measured binary modified after the release
+# manifest was built: appended bytes still execute, but the hash (and so
+# PCR 11) no longer matches. Used by E2E-10 and the tamper matrix (T1).
+FROM agentbox-appliance:prod
+RUN printf 'patched' >> /usr/local/bin/agentbox-manager

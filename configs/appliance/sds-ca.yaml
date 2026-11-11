@@ -1,0 +1,9 @@
+resources:
+- "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
+  name: control_plane_ca
+  validation_context:
+    trusted_ca: { filename: /run/agentbox/certs/ca.crt }
+    watched_directory: { path: /run/agentbox/certs }
+    match_typed_subject_alt_names:
+    - san_type: DNS
+      matcher: { exact: gw.agentbox.corp }

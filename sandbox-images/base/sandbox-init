@@ -1,0 +1,28 @@
+#!/bin/bash
+# PID 1 of every sandbox (runs under gVisor). The manager writes
+# /etc/agentbox/env (sandbox ID, local token, base URLs, proxies) and
+# /etc/agentbox/authorized_keys (the user's per-device SSH key).
+load_env() { while IFS= read -r l; do [ -n "$l" ] && export "$l"; done < /etc/agentbox/env; }
+load_env
+mkdir -p /run/sshd /root /workspace
+cd /workspace
+
+# Populate the workspace once.
+if [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
+  if [[ "${AGENTBOX_REPO:-}" =~ ^https?:// ]]; then
+    git clone --quiet "$AGENTBOX_REPO" /workspace 2>/var/log/clone.log || cp -a /opt/sample-repo/. /workspace/
+  else
+    cp -a /opt/sample-repo/. /workspace/
+  fi
+  if [ ! -d /workspace/.git ]; then
+    git -C /workspace init -q
+    git -C /workspace -c user.name=agentbox -c user.email=agentbox@agentbox.corp add -A
+    git -C /workspace -c user.name=agentbox -c user.email=agentbox@agentbox.corp commit -q -m "initial commit"
+  fi
+fi
+
+echo "sandbox ${AGENTBOX_SANDBOX:-?} ready"
+while true; do
+  /usr/sbin/sshd -D -e
+  sleep 1
+done

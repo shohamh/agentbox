@@ -1,0 +1,14 @@
+apiVersion: 1
+datasources:
+  - name: Agentbox ClickHouse
+    uid: abx-ch
+    type: grafana-clickhouse-datasource
+    isDefault: true
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: agentbox
+      defaultDatabase: otel
+    secureJsonData:
+      password: $CLICKHOUSE_PASSWORD

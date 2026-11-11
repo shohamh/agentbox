@@ -1,0 +1,8 @@
+# Stand-in for the internal services sandboxes may reach (git, pypi, npm,
+# docs) and one they may not (blocked). Answers any request and logs it, so
+# tests can prove what did and did not get through.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+COPY image/corp.py /srv/corp.py
+EXPOSE 80
+CMD ["python3", "-u", "/srv/corp.py"]

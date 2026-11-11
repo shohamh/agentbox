@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# The Agentbox appliance. One recipe, three outputs (scripts/release.sh):
+#   agentbox-appliance:prod      the published production image
+#   agentbox-appliance:dev       FLAVOR=dev, a different measurement (T3)
+#   agentbox-appliance:tampered  prod plus one modified measured file (T1, E2E-10)
+# Build context is the repo root; scripts/release.sh first places the policy
+# root public key at image/.build/policy.pub.
+FROM envoyproxy/envoy:v1.36.2 AS envoy
+FROM otel/opentelemetry-collector-contrib:0.138.0 AS otelcol
+FROM agentbox-bins:dev AS bins
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl bzip2 iproute2 nftables swtpm swtpm-tools tini procps iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+ARG GVISOR=20261026.0
+RUN curl -fsSL https://storage.googleapis.com/gvisor/releases/release/${GVISOR}/x86_64/gvisor.tar.bz2 | tar -xj -C /tmp \
+    && install -m755 /tmp/runsc /usr/local/bin/runsc \
+    && cp -r /tmp/gvisor-bin /usr/local/bin/gvisor-bin \
+    && rm -rf /tmp/* && runsc --version | head -1
+COPY --from=envoy /usr/local/bin/envoy /usr/local/bin/envoy
+COPY --from=otelcol /otelcol-contrib /usr/local/bin/otelcol-contrib
+COPY --from=bins /bin/agentbox-manager /bin/agentbox-measure /usr/local/bin/
+COPY configs/appliance/entrypoint.sh /usr/local/bin/appliance-entrypoint
+COPY configs/appliance/appliance.json configs/appliance/envoy.yaml configs/appliance/sds-cert.yaml \
+     configs/appliance/sds-ca.yaml configs/appliance/otelcol.yaml configs/appliance/measured-files /etc/agentbox/
+COPY image/.build/policy.pub /etc/agentbox/policy.pub
+ARG FLAVOR=prod
+ARG VERSION=1.0.0-poc
+RUN chmod 755 /usr/local/bin/appliance-entrypoint \
+    && printf '{"version":"%s","flavor":"%s"}\n' "$VERSION" "$FLAVOR" > /etc/agentbox/release.json
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/appliance-entrypoint"]

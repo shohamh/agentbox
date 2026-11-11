@@ -1,0 +1,185 @@
+{
+  "realm": "agentbox",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "accessTokenLifespan": 3600,
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 36000,
+  "oauth2DeviceCodeLifespan": 600,
+  "oauth2DevicePollingInterval": 3,
+  "bruteForceProtected": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "viewer",
+        "description": "Read-only access to the Agentbox console"
+      },
+      {
+        "name": "approver",
+        "description": "Can decide permission requests and work alerts"
+      },
+      {
+        "name": "admin",
+        "description": "Full console administration"
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@agentbox.corp",
+      "firstName": "Alice",
+      "lastName": "Developer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": []
+    },
+    {
+      "username": "dave",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "dave@agentbox.corp",
+      "firstName": "Dave",
+      "lastName": "Developer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": []
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@agentbox.corp",
+      "firstName": "Bob",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin"
+      ]
+    },
+    {
+      "username": "erin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "erin@agentbox.corp",
+      "firstName": "Erin",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin"
+      ]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "carol@agentbox.corp",
+      "firstName": "Carol",
+      "lastName": "Approver",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "approver"
+      ]
+    },
+    {
+      "username": "frank",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "frank@agentbox.corp",
+      "firstName": "Frank",
+      "lastName": "Viewer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "viewer"
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "agentbox-console",
+      "name": "Agentbox admin console",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://console.agentbox.corp:18080/*",
+        "http://localhost:18080/*",
+        "http://127.0.0.1:18080/*"
+      ],
+      "webOrigins": [
+        "+"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "http://console.agentbox.corp:18080/*##http://localhost:18080/*##http://127.0.0.1:18080/*"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ]
+    },
+    {
+      "clientId": "agentbox-cli",
+      "name": "Agentbox CLI (device code flow)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ]
+    }
+  ]
+}

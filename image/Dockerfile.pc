@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+# A simulated PC: agentbox-host (container driver), the agentbox CLI and an ssh
+# client. It pairs with one appliance over a private network that stands in for
+# vsock. Build context is the repo root.
+FROM agentbox-bins:dev AS bins
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl openssl openssh-client tini jq procps iproute2 netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=bins /bin/agentbox-host /bin/agentbox /usr/local/bin/
+COPY image/pc-entrypoint.sh /usr/local/bin/pc-entrypoint
+RUN chmod 755 /usr/local/bin/pc-entrypoint && mkdir -p /etc/agentbox /var/lib/agentbox /run/agentbox
+ENV AGENTBOX_HOST_SOCKET=/run/agentbox/host.sock
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pc-entrypoint"]

@@ -1,0 +1,13 @@
+/bin/
+/deploy/compose/.secrets/
+/deploy/compose/.state/
+node_modules/
+/web/console/dist/
+/test/ui/test-results/
+/test/ui/playwright-report/
+*.log
+test/results/
+test/results-failed-run*/
+image/.build/
+image/tools/*.tmp
+test/results/

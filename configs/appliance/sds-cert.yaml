@@ -1,0 +1,9 @@
+# File-based SDS: Envoy reloads the appliance certificate when the manager
+# renames a new one into /run/agentbox/certs (every ~20 minutes).
+resources:
+- "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
+  name: appliance_cert
+  tls_certificate:
+    certificate_chain: { filename: /run/agentbox/certs/appliance.crt }
+    private_key: { filename: /run/agentbox/certs/appliance.key }
+    watched_directory: { path: /run/agentbox/certs }

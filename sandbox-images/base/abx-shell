@@ -1,0 +1,6 @@
+#!/bin/bash
+# Login shell for root: ssh sessions do not inherit the sandbox environment,
+# so load /etc/agentbox/env first.
+while IFS= read -r l; do [ -n "$l" ] && export "$l"; done < /etc/agentbox/env 2>/dev/null
+cd /workspace 2>/dev/null
+exec /bin/bash "$@"

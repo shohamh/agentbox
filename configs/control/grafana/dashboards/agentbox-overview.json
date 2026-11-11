@@ -1,0 +1,148 @@
+{
+ "uid": "agentbox-overview",
+ "title": "Agentbox overview",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "30s",
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "Model calls per minute",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "abx-ch"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "abx-ch"
+     },
+     "editorType": "sql",
+     "format": 0,
+     "rawSql": "SELECT toStartOfMinute(Timestamp) AS time, count() AS calls FROM otel.otel_logs WHERE LogAttributes['event.name']='model.call' AND $__timeFilter(Timestamp) GROUP BY time ORDER BY time"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "Tokens per minute",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "abx-ch"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "abx-ch"
+     },
+     "editorType": "sql",
+     "format": 0,
+     "rawSql": "SELECT toStartOfMinute(Timestamp) AS time, sum(toUInt64OrZero(LogAttributes['gen_ai.usage.input_tokens'])) AS input, sum(toUInt64OrZero(LogAttributes['gen_ai.usage.output_tokens'])) AS output FROM otel.otel_logs WHERE LogAttributes['event.name']='model.call' AND $__timeFilter(Timestamp) GROUP BY time ORDER BY time"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "Denied model requests and egress",
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "abx-ch"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "abx-ch"
+     },
+     "editorType": "sql",
+     "format": 0,
+     "rawSql": "SELECT toStartOfMinute(Timestamp) AS time, LogAttributes['event.name'] AS kind, count() AS n FROM otel.otel_logs WHERE LogAttributes['event.name'] IN ('gateway.denied','egress.denied','dns.denied') AND $__timeFilter(Timestamp) GROUP BY time, kind ORDER BY time"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "table",
+   "title": "Events by type (last hour)",
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "abx-ch"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "abx-ch"
+     },
+     "editorType": "sql",
+     "format": 1,
+     "rawSql": "SELECT LogAttributes['event.name'] AS event, count() AS n FROM otel.otel_logs WHERE $__timeFilter(Timestamp) GROUP BY event ORDER BY n DESC LIMIT 50"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "table",
+   "title": "Recent warnings",
+   "gridPos": {
+    "x": 0,
+    "y": 16,
+    "w": 24,
+    "h": 10
+   },
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "abx-ch"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "abx-ch"
+     },
+     "editorType": "sql",
+     "format": 1,
+     "rawSql": "SELECT Timestamp, ServiceName, LogAttributes['event.name'] AS event, LogAttributes['message'] AS message, ResourceAttributes['agentbox.user'] AS user FROM otel.otel_logs WHERE SeverityText IN ('WARN','ERROR') AND $__timeFilter(Timestamp) ORDER BY Timestamp DESC LIMIT 100"
+    }
+   ]
+  }
+ ]
+}

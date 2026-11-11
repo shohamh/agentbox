@@ -1,0 +1,14 @@
+# One-off check: runs the TPM quote round trip against a software TPM.
+#   docker build -f image/Dockerfile.test-tpm --no-cache-filter=run .
+FROM golang:1.27-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends swtpm swtpm-tools && rm -rf /var/lib/apt/lists/*
+ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+ARG NONCE=1
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /tmp/tpm /run/swtpm && swtpm_setup --tpm2 --tpmstate /tmp/tpm --createek --overwrite --config /etc/swtpm_setup.conf \
+    && (swtpm socket --tpm2 --tpmstate dir=/tmp/tpm --server type=unixio,path=/run/swtpm/tpm.sock --ctrl type=unixio,path=/run/swtpm/ctrl.sock --flags not-need-init,startup-clear & sleep 2 \
+    && TPM_SOCKET=/run/swtpm/tpm.sock go test -count=1 -v ./pkg/tpm/ ./pkg/measure/ ./pkg/bundle/)

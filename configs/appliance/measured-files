@@ -1,0 +1,15 @@
+# Everything listed here is hashed at boot and extended into PCR 11, in this
+# order (this file first). The release manifest carries the same hashes.
+/usr/local/bin/appliance-entrypoint
+/usr/local/bin/agentbox-manager
+/usr/local/bin/agentbox-measure
+/usr/local/bin/runsc
+/usr/local/bin/envoy
+/usr/local/bin/otelcol-contrib
+/etc/agentbox/appliance.json
+/etc/agentbox/envoy.yaml
+/etc/agentbox/sds-cert.yaml
+/etc/agentbox/sds-ca.yaml
+/etc/agentbox/otelcol.yaml
+/etc/agentbox/policy.pub
+/etc/agentbox/release.json

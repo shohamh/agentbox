@@ -1,0 +1,38 @@
+# Routes model names to the internal model servers (vLLM in production; the
+# deterministic mockllm stand-in in the container test bed). The master key
+# never leaves this container and gatekeeper; users and appliances hold none.
+model_list:
+  - model_name: deepseek-v3
+    litellm_params:
+      model: openai/deepseek-v3
+      api_base: http://mockllm:8000/v1
+      api_key: none
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000002
+  - model_name: glm-4
+    litellm_params:
+      model: openai/glm-4
+      api_base: http://mockllm:8000/v1
+      api_key: none
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000002
+  - model_name: small
+    litellm_params:
+      model: openai/small
+      api_base: http://mockllm:8000/v1
+      api_key: none
+      input_cost_per_token: 0.0000005
+      output_cost_per_token: 0.000001
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  disable_spend_logs: false
+  allow_requests_on_db_unavailable: false
+
+litellm_settings:
+  callbacks: abx_callback.handler
+  drop_params: true
+  num_retries: 0
+  request_timeout: 120
+  telemetry: false
