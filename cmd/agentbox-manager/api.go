@@ -1,6 +1,7 @@
 package main
 
 import (
+	"agentbox/pkg/tpm"
 	"bufio"
 	"bytes"
 	"encoding/json"
@@ -31,8 +32,23 @@ func (m *Manager) api() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", m.apiStatus)
 	mux.HandleFunc("GET /v1/diagnostics", m.diagnostics)
+	mux.HandleFunc("GET /v1/tpmprobe", func(w http.ResponseWriter, _ *http.Request) {
+		// A fresh connection, so a problem in the manager's own handle cannot hide the result.
+		conn, err := tpm.Open(m.cfg.TPMSocket)
+		if err != nil {
+			errOut(w, 503, err)
+			return
+		}
+		defer conn.Close()
+		jsonOut(w, 200, tpm.Probe(conn))
+	})
 	mux.HandleFunc("GET /v1/identity", func(w http.ResponseWriter, _ *http.Request) {
-		jsonOut(w, 200, map[string]any{"ak_public": m.akPub, "ek_public": m.ekPub, "release": m.rel})
+		_, _, akPub, ekPub, ok := m.tpmState()
+		if !ok {
+			errOut(w, 503, fmt.Errorf("the virtual TPM is not ready: %v (see agentbox doctor)", faultList()["tpm"]))
+			return
+		}
+		jsonOut(w, 200, map[string]any{"ak_public": akPub, "ek_public": ekPub, "release": m.rel})
 	})
 	mux.HandleFunc("POST /v1/configure", m.apiConfigure)
 	mux.HandleFunc("GET /v1/sandboxes", func(w http.ResponseWriter, _ *http.Request) { jsonOut(w, 200, m.sandboxList()) })

@@ -25,11 +25,21 @@ func sh(timeout time.Duration, script string) string {
 // appliance, with no secrets (no tokens, keys or bundle contents).
 func (m *Manager) diagnostics(w http.ResponseWriter, _ *http.Request) {
 	d := map[string]any{"release": m.rel}
-	if pcr, err := tpm.ReadPCR(m.tpm); err == nil {
-		d["pcr11"] = hex.EncodeToString(pcr)
+	if conn, _, _, _, ok := m.tpmState(); ok {
+		if pcr, err := tpm.ReadPCR(conn); err == nil {
+			d["pcr11"] = hex.EncodeToString(pcr)
+		} else {
+			d["pcr11_error"] = err.Error()
+		}
 	} else {
-		d["pcr11_error"] = err.Error()
+		d["pcr11_error"] = "TPM not ready: " + faultList()["tpm"]
 	}
+	d["faults"] = faultList()
+	if b, err := os.ReadFile("/run/agentbox/measure.error"); err == nil {
+		d["measure_error"] = strings.TrimSpace(string(b))
+	}
+	d["tpm_devices"] = sh(3*time.Second, "ls -la /dev/tpm* 2>&1; dmesg 2>/dev/null | grep -i -E 'tpm|hv_sock|vsock' | tail -12")
+	d["modules"] = sh(3*time.Second, "lsmod | grep -E 'hv_|vsock|tpm' | cut -d' ' -f1 | paste -sd ' '")
 	if b, err := os.ReadFile("/proc/version"); err == nil {
 		d["kernel"] = strings.TrimSpace(string(b))
 	}

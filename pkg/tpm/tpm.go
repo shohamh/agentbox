@@ -113,14 +113,22 @@ type AK struct {
 }
 
 func LoadAK(t transport.TPM) (*AK, error) {
-	rsp, err := tpm2.CreatePrimary{
-		PrimaryHandle: tpm2.TPMRHEndorsement,
-		InPublic:      tpm2.New2B(akTemplate()),
-	}.Execute(t)
-	if err != nil {
-		return nil, fmt.Errorf("create AK: %w", err)
+	// The owner hierarchy first: it needs no endorsement authorization, which
+	// some virtual TPMs restrict. The AK only has to be a restricted signing key
+	// that never leaves the TPM; the enrollment registers its public part.
+	var errs []string
+	for _, h := range []struct {
+		name string
+		hier tpm2.TPMHandle
+	}{{"owner", tpm2.TPMRHOwner}, {"endorsement", tpm2.TPMRHEndorsement}} {
+		rsp, err := tpm2.CreatePrimary{PrimaryHandle: h.hier, InPublic: tpm2.New2B(akTemplate())}.Execute(t)
+		if err != nil {
+			errs = append(errs, h.name+": "+err.Error())
+			continue
+		}
+		return &AK{tpm: t, handle: rsp.ObjectHandle, name: rsp.Name, Public: tpm2.Marshal(rsp.OutPublic)}, nil
 	}
-	return &AK{tpm: t, handle: rsp.ObjectHandle, name: rsp.Name, Public: tpm2.Marshal(rsp.OutPublic)}, nil
+	return nil, fmt.Errorf("create AK: %s", strings.Join(errs, "; "))
 }
 
 // EKPublic returns the marshalled public part of the ECC endorsement key.
@@ -227,7 +235,7 @@ func openDevice(path string) (*DeviceTPM, error) {
 	var err error
 	var f *os.File
 	for i := 0; i < 50; i++ {
-		if f, err = os.OpenFile(path, os.O_RDWR, 0); err == nil {
+		if f, err = openBlocking(path); err == nil {
 			return &DeviceTPM{f: f}, nil
 		}
 		time.Sleep(200 * time.Millisecond)

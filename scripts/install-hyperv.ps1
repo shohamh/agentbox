@@ -20,11 +20,31 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+# Everything this script prints, plus diagnostics, lands in C:\ProgramData\Agentbox
+# so it can be read without elevation (install.log, diag.txt).
+New-Item -ItemType Directory -Force "C:\ProgramData\Agentbox" | Out-Null
+try { Start-Transcript -Path "C:\ProgramData\Agentbox\install.log" -Force | Out-Null } catch { }
+trap {
+  Write-Host "FAILED: $($_.Exception.Message)" -ForegroundColor Red
+  try { & (Join-Path $PSScriptRoot "hyperv-diag.ps1") } catch { }
+  try { Stop-Transcript | Out-Null } catch { }
+  break
+}
 $bin = "C:\Program Files\Agentbox\bin"
 $data = "C:\ProgramData\Agentbox"
 $vmdir = Join-Path $data "vm"
 $svcName = "agentbox-host"
 $vmName = "agentbox-appliance"
+
+# Windows PowerShell 5.1 turns any stderr line of a native command into a
+# terminating error under $ErrorActionPreference = "Stop" (docker prints harmless
+# warnings; agentbox.exe prints errors while the appliance boots). Run native
+# commands through this and read $script:nativeExit.
+function Native([scriptblock]$Block) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try { & $Block; $script:nativeExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+}
 
 $admin = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $admin.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -36,6 +56,8 @@ function Remove-Install {
     Stop-Service $svcName -Force -ErrorAction SilentlyContinue
     sc.exe delete $svcName | Out-Null
   }
+  # A user-mode host from scripts\install-windows.ps1 would hold the named pipe.
+  Get-Process agentbox-host -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
   if ($vm) {
     if ($vm.State -ne "Off") { Stop-VM -Name $vmName -TurnOff -Force }
@@ -61,9 +83,7 @@ foreach ($f in @($Vhdx, (Join-Path $Binaries "agentbox-host.exe"), (Join-Path $B
 }
 $sw = Get-VMSwitch -Name "Default Switch" -ErrorAction SilentlyContinue
 if (-not $sw) { throw "The Hyper-V 'Default Switch' does not exist. Restart the 'Hyper-V Virtual Machine Management' service or Windows." }
-$ip = (Get-NetIPAddress -InterfaceAlias "vEthernet (Default Switch)" -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
-if (-not $ip) { throw "Cannot find this PC's address on the Default Switch." }
-Write-Host "   Hyper-V ok; this PC is $ip on the Default Switch (the appliance reaches the control plane there)"
+Write-Host "   Hyper-V ok. The appliance reaches the control plane through this PC over Hyper-V sockets (no network address or firewall rule involved)."
 
 # ---- remove a previous install, then lay down files ----
 Remove-Install
@@ -74,14 +94,13 @@ Copy-Item -Force $Vhdx (Join-Path $vmdir "agentbox-appliance.vhdx")
 icacls $vmdir /grant "NT VIRTUAL MACHINE\Virtual Machines:(OI)(CI)F" | Out-Null
 
 # ---- control plane reachable from the VM ----
-Write-Host "== publishing the control plane on $ip"
+Write-Host "== publishing the control-plane ports on loopback (the host service relays them to the VM)"
 $envFile = Join-Path $repo "deploy\compose\.secrets\compose.env"
 if (-not (Test-Path $envFile)) { throw "$envFile not found: bring the control plane up first (bash scripts/up.sh)" }
-$lines = Get-Content $envFile | Where-Object { $_ -notmatch "^ABX_HYPERV_IP=" }
-[IO.File]::WriteAllLines($envFile, @($lines) + "ABX_HYPERV_IP=$ip", (New-Object Text.UTF8Encoding $false))
 $compose = @("compose", "-p", "agentbox", "-f", (Join-Path $repo "deploy\compose\docker-compose.yml"), "-f", (Join-Path $repo "deploy\compose\hyperv.yml"), "--env-file", $envFile, "up", "-d")
-& docker @compose 2>&1 | Select-Object -Last 4
-if ($LASTEXITCODE -ne 0) { Write-Warning "docker compose failed here (is Docker Desktop running for this user?). Run it yourself: docker $($compose -join ' ')" }
+$composeOut = Native { & docker @compose 2>&1 | ForEach-Object { "$_" } }
+$composeOut | Where-Object { $_ -notmatch "was not created by Docker Compose" } | Select-Object -Last 6
+if ($script:nativeExit -ne 0) { Write-Warning "docker compose failed here (is Docker Desktop running for this user?). Run it yourself: docker $($compose -join ' ')" }
 
 # ---- the corporate root CA, for the host service ----
 $ca = Join-Path $data "root_ca.crt"
@@ -122,17 +141,21 @@ $deadline = (Get-Date).AddMinutes(6)
 $up = $false
 while ((Get-Date) -lt $deadline) {
   Start-Sleep -Seconds 5
-  $out = & $cli status 2>&1 | Out-String
+  $out = (Native { & $cli status 2>&1 | ForEach-Object { "$_" } }) | Out-String
   if ($out -match "appliance\s+release") { $up = $true; break }
 }
 Write-Host ""
-& $cli status
+Native { & $cli status 2>&1 | ForEach-Object { "$_" } }
 if (-not $up) {
+  try { & (Join-Path $PSScriptRoot "hyperv-diag.ps1") } catch { }
+  try { Stop-Transcript | Out-Null } catch { }
   Write-Warning "The appliance did not answer within 6 minutes."
   Write-Host "Look at:  Get-Content $data\host.log -Tail 40 ; Get-VM $vmName ; & '$cli' doctor"
   Write-Host "(a dev-flavor image has a serial console: bash scripts/build-vm.sh with FLAVOR=dev)"
   exit 1
 }
+try { & (Join-Path $PSScriptRoot "hyperv-diag.ps1") } catch { }
+try { Stop-Transcript | Out-Null } catch { }
 Write-Host ""
 Write-Host "Next: enroll this PC and start a sandbox (from a normal, non-elevated shell):"
 Write-Host "  `"Passw0rd!`" | & '$cli' enroll --user alice --password-stdin"

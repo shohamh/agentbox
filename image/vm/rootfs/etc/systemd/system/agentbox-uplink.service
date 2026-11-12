@@ -1,0 +1,10 @@
+[Unit]
+Description=Agentbox uplink (control-plane ports over vsock to the host)
+After=network.target agentbox-site.service
+Before=agentbox-appliance.service
+[Service]
+ExecStart=/usr/local/bin/agentbox-uplink
+Restart=always
+RestartSec=1
+[Install]
+WantedBy=multi-user.target

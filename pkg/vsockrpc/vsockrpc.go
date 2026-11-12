@@ -56,3 +56,16 @@ func Client(addr string, timeout time.Duration) *http.Client {
 		},
 	}
 }
+
+// ClientFunc is like Client, but the destination is looked up on every
+// connection: the Hyper-V VM ID is only known once the VM exists, and changes
+// if the VM is recreated.
+func ClientFunc(addr func() string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return Dial(ctx, addr()) },
+			MaxIdleConns: 4, IdleConnTimeout: 30 * time.Second,
+		},
+	}
+}

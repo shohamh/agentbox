@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -144,16 +145,20 @@ func main() {
 		m.ev.SetResource("agentbox.user", m.st.User)
 	}
 
-	if m.tpm, err = tpm.Open(cfg.TPMSocket); err != nil {
-		log.Fatal(err)
-	}
-	if m.ak, err = tpm.LoadAK(m.tpm); err != nil {
-		log.Fatal(err)
-	}
-	m.akPub = m.ak.Public
-	if m.ekPub, err = tpm.EKPublic(m.tpm); err != nil {
-		log.Fatal(err)
-	}
+	// The control channel comes up first and stays up whatever else fails: it is how
+	// `agentbox doctor` learns why something did not work. Nothing below this point
+	// may end the process.
+	go keepTrying("control channel", func() error {
+		lis, err := vsockrpc.Listen(cfg.ControlListen)
+		if err != nil {
+			return err
+		}
+		recordFault("control channel", nil)
+		log.Printf("agentbox-manager %s (%s): control channel %s", m.rel.Version, m.rel.Flavor, cfg.ControlListen)
+		return (&http.Server{Handler: m.api(), ReadHeaderTimeout: 10 * time.Second}).Serve(lis)
+	})
+	// Identity keys in the (virtual) TPM; retried because the device can appear late.
+	go retryUntil("tpm", m.initTPM)
 
 	// A previously applied bundle keeps sandboxes working offline (O3).
 	if m.st.Bundle != nil {
@@ -163,33 +168,33 @@ func main() {
 		}
 	}
 
+	// Try once now (Envoy needs the bridge and the placeholder certificate to start),
+	// and keep retrying in the background if it fails.
 	if err := m.setupNetwork(); err != nil {
-		log.Fatalf("network: %v", err)
+		log.Printf("network: %v", err)
+		recordFault("network", err)
+		go retryUntil("network", m.setupNetwork)
 	}
 	if err := m.placeholderCert(); err != nil {
-		log.Fatalf("placeholder cert: %v", err)
+		log.Printf("placeholder certificate: %v", err)
+		recordFault("placeholder certificate", err)
+		go retryUntil("placeholder certificate", m.placeholderCert)
 	}
 	m.supervise("envoy", cfg.EnvoyBin, "-c", "/etc/agentbox/envoy.yaml", "--log-level", "warn", "--base-id", "1")
 	m.supervise("otelcol", cfg.OtelcolBin, "--config", "/etc/agentbox/otelcol.yaml")
 
-	go m.serveAuthz()
-	go m.serveEgress()
-	go m.serveDNS()
-	go m.serveOTLPProxy()
+	go keepTrying("model authorization", m.serveAuthz)
+	go keepTrying("egress proxy", m.serveEgress)
+	go keepTrying("dns", m.serveDNS)
+	go keepTrying("otlp proxy", m.serveOTLPProxy)
 	go m.gatewayProbe()
-	go m.serveTrace()
+	go keepTrying("gvisor trace sink", m.serveTrace)
 	go m.attestLoop()
 	go m.syncLoop()
 	go m.heartbeatLoop()
 	m.restoreSandboxes()
 
-	lis, err := vsockrpc.Listen(cfg.ControlListen)
-	if err != nil {
-		log.Fatal(err)
-	}
-	srv := &http.Server{Handler: m.api(), ReadHeaderTimeout: 10 * time.Second}
-	go srv.Serve(lis)
-	log.Printf("agentbox-manager %s (%s) ready; control channel %s", m.rel.Version, m.rel.Flavor, cfg.ControlListen)
+	log.Printf("agentbox-manager %s (%s) started", m.rel.Version, m.rel.Flavor)
 	m.ev.Emit("appliance.boot", map[string]any{"release": m.rel.Version, "flavor": m.rel.Flavor})
 
 	sig := make(chan os.Signal, 1)
@@ -241,3 +246,38 @@ func (m *Manager) bundleValid() (*bundle.Bundle, string) {
 func (m *Manager) emit(name string, attrs map[string]any) { m.ev.Emit(name, attrs) }
 
 var _ = context.Background
+
+// initTPM opens the TPM and creates the attestation key. Until it succeeds the
+// appliance cannot attest, but everything else (and the control channel) works.
+func (m *Manager) initTPM() error {
+	conn, err := tpm.Open(m.cfg.TPMSocket)
+	if err != nil {
+		return err
+	}
+	ak, err := tpm.LoadAK(conn)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("create attestation key: %w", err)
+	}
+	// The endorsement key is informational (the enrollment binds the attestation key);
+	// a TPM that will not create one must not stop the appliance.
+	ek, err := tpm.EKPublic(conn)
+	if err != nil {
+		log.Printf("endorsement key unavailable (continuing): %v", err)
+		recordFault("tpm endorsement key", err)
+		ek = nil
+	}
+	m.mu.Lock()
+	m.tpm, m.ak, m.akPub, m.ekPub = conn, ak, ak.Public, ek
+	m.mu.Unlock()
+	log.Printf("TPM ready (%s)", m.cfg.TPMSocket)
+	kickAttest()
+	return nil
+}
+
+// tpmState returns the TPM objects once initTPM has succeeded.
+func (m *Manager) tpmState() (conn tpm.Conn, ak *tpm.AK, akPub, ekPub []byte, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tpm, m.ak, m.akPub, m.ekPub, m.tpm != nil && m.ak != nil
+}

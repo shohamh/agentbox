@@ -62,14 +62,14 @@ func (b *bucket) take(rpm int) bool {
 	return true
 }
 
-func (m *Manager) serveAuthz() {
+func (m *Manager) serveAuthz() error {
 	lis, err := net.Listen("tcp", "127.0.0.1:9001")
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	g := grpc.NewServer()
 	authv3.RegisterAuthorizationServer(g, &authz{m: m})
-	log.Fatal(g.Serve(lis))
+	return g.Serve(lis)
 }
 
 func bearer(h map[string]string) string {
@@ -159,9 +159,9 @@ func (m *Manager) egressAllowed(s *Sandbox, host string) (bool, string) {
 	return false, "not in this sandbox's egress policy"
 }
 
-func (m *Manager) serveEgress() {
+func (m *Manager) serveEgress() error {
 	srv := &http.Server{Addr: "10.88.0.1:3128", Handler: http.HandlerFunc(m.egress), ReadHeaderTimeout: 15 * time.Second}
-	log.Fatal(srv.ListenAndServe())
+	return srv.ListenAndServe()
 }
 
 func (m *Manager) egress(w http.ResponseWriter, r *http.Request) {
@@ -241,10 +241,10 @@ func splice(c net.Conn, buf *bufio.ReadWriter, up net.Conn) {
 
 // ---------- DNS responder: only allowlisted names resolve ----------
 
-func (m *Manager) serveDNS() {
+func (m *Manager) serveDNS() error {
 	h := dns.HandlerFunc(m.dns)
-	go func() { log.Fatal((&dns.Server{Addr: "10.88.0.1:53", Net: "tcp", Handler: h}).ListenAndServe()) }()
-	log.Fatal((&dns.Server{Addr: "10.88.0.1:53", Net: "udp", Handler: h}).ListenAndServe())
+	go keepTrying("dns-tcp", func() error { return (&dns.Server{Addr: "10.88.0.1:53", Net: "tcp", Handler: h}).ListenAndServe() })
+	return (&dns.Server{Addr: "10.88.0.1:53", Net: "udp", Handler: h}).ListenAndServe()
 }
 
 var internalNames = map[string]bool{"llm.agentbox.": true, "otel.agentbox.": true, "agentbox.": true}
@@ -283,7 +283,7 @@ func (m *Manager) dns(w dns.ResponseWriter, r *dns.Msg) {
 
 // ---------- OTLP from sandboxes, stamped with the sandbox it came from ----------
 
-func (m *Manager) serveOTLPProxy() {
+func (m *Manager) serveOTLPProxy() error {
 	target, _ := url.Parse("http://127.0.0.1:4318")
 	rp := httputil.NewSingleHostReverseProxy(target)
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -295,25 +295,27 @@ func (m *Manager) serveOTLPProxy() {
 		r.Header.Set("X-Agentbox-Sandbox", s.ID)
 		rp.ServeHTTP(w, r)
 	})
-	log.Fatal((&http.Server{Addr: "10.88.0.1:4318", Handler: h, ReadHeaderTimeout: 15 * time.Second}).ListenAndServe())
+	return (&http.Server{Addr: "10.88.0.1:4318", Handler: h, ReadHeaderTimeout: 15 * time.Second}).ListenAndServe()
 }
 
 // ---------- gVisor runtime monitoring sink ----------
 
 const wireVersion = 1
 
-func (m *Manager) serveTrace() {
+func (m *Manager) serveTrace() error {
 	path := filepath.Join(m.cfg.RunDir, "trace.sock")
 	os.Remove(path)
 	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_SEQPACKET, 0)
 	if err != nil {
-		log.Fatalf("trace socket: %v", err)
+		return fmt.Errorf("trace socket: %w", err)
 	}
 	if err := unix.Bind(fd, &unix.SockaddrUnix{Name: path}); err != nil {
-		log.Fatalf("trace bind: %v", err)
+		unix.Close(fd)
+		return fmt.Errorf("trace bind: %w", err)
 	}
 	if err := unix.Listen(fd, 64); err != nil {
-		log.Fatalf("trace listen: %v", err)
+		unix.Close(fd)
+		return fmt.Errorf("trace listen: %w", err)
 	}
 	log.Printf("gVisor trace sink listening on %s", path)
 	for {
@@ -448,5 +450,52 @@ func (m *Manager) gatewayProbe() {
 			}
 		}
 		time.Sleep(2 * time.Second)
+	}
+}
+
+// ---------- keeping the appliance reachable when a part fails ----------
+
+// faults records why a part of the appliance is not working, for `agentbox
+// doctor`. The control channel must stay up whatever else fails, so nothing
+// outside configuration loading may kill the process.
+var faults sync.Map // name -> error text
+
+func recordFault(name string, err error) {
+	if err == nil {
+		faults.Delete(name)
+		return
+	}
+	faults.Store(name, err.Error())
+}
+
+func faultList() map[string]string {
+	out := map[string]string{}
+	faults.Range(func(k, v any) bool { out[k.(string)] = v.(string); return true })
+	return out
+}
+
+// keepTrying runs f until the process ends, retrying every 5 seconds.
+func keepTrying(name string, f func() error) {
+	for {
+		err := f()
+		if err == nil {
+			err = fmt.Errorf("returned")
+		}
+		log.Printf("%s stopped: %v; retrying in 5s", name, err)
+		recordFault(name, err)
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// retryUntil runs f every 5 seconds until it succeeds, recording the fault meanwhile.
+func retryUntil(name string, f func() error) {
+	for {
+		err := f()
+		recordFault(name, err)
+		if err == nil {
+			return
+		}
+		log.Printf("%s: %v; retrying in 5s", name, err)
+		time.Sleep(5 * time.Second)
 	}
 }

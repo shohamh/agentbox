@@ -41,3 +41,9 @@ func dialVsock(ctx context.Context, scheme, rest string) (net.Conn, error) {
 	}
 	return winio.Dial(ctx, &winio.HvsockAddr{VMID: vmID, ServiceID: VsockServiceID(uint32(port))})
 }
+
+// ListenGuests accepts connections made by guest VMs to this host's Hyper-V
+// socket service for the given vsock port (the Linux guest dials CID 2).
+func ListenGuests(port uint32) (net.Listener, error) {
+	return winio.ListenHvsock(&winio.HvsockAddr{VMID: winio.HvsockGUIDWildcard(), ServiceID: VsockServiceID(port)})
+}

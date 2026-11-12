@@ -154,7 +154,11 @@ func (m *Manager) attestOnce() (time.Duration, error) {
 	}
 	m.setReach(nil)
 	nonce, _ := hex.DecodeString(n.Nonce)
-	q, err := m.ak.Quote(nonce)
+	_, ak, _, _, ok := m.tpmState()
+	if !ok {
+		return 0, fmt.Errorf("the virtual TPM is not ready: %s", faultList()["tpm"])
+	}
+	q, err := ak.Quote(nonce)
 	if err != nil {
 		return 0, err
 	}

@@ -12,7 +12,9 @@ FLAVOR="${FLAVOR:-prod}"
 VERSION="${VERSION:-1.0.0-poc-vm}"
 SECRETS_VOLUME="${SECRETS_VOLUME:-agentbox_secrets}"
 RELEASES_VOLUME="${RELEASES_VOLUME:-agentbox_releases}"
-EXTRA=""; NAME="agentbox-appliance"
+# Not measured (the boot partition): show the appliance log on the VM console so a Hyper-V
+# console window (vmconnect) tells you what it is doing.
+EXTRA="systemd.journald.forward_to_console=1 systemd.journald.max_level_console=info"; NAME="agentbox-appliance"
 if [ "${TEST:-0}" = 1 ]; then EXTRA="agentbox.control=tcp://0.0.0.0:7000 agentbox.no_site=1 systemd.journald.forward_to_console=1 systemd.journald.max_level_console=info"; NAME="agentbox-appliance-test"; fi
 mkdir -p image/.build dist/vm
 docker run --rm -v "$SECRETS_VOLUME:/s:ro" debian:bookworm-slim cat /s/policy.pub > image/.build/policy.pub

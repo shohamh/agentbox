@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -323,12 +322,10 @@ func sshArgs(sb string) ([]string, error) {
 		return nil, err
 	}
 	self, _ := os.Executable()
-	null := "/dev/null"
-	if runtime.GOOS == "windows" {
-		null = "NUL"
-	}
-	return []string{"-i", priv, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=" + null, "-o", "LogLevel=ERROR",
-		"-o", fmt.Sprintf("ProxyCommand=\"%s\" ssh-proxy %s", self, sb), "root@" + sb}, nil
+	// /dev/null, not NUL, on Windows too: Windows OpenSSH maps /dev/null to the
+	// null device, while a POSIX ssh (Git for Windows) would write a file named NUL.
+	return []string{"-i", priv, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+		"-o", fmt.Sprintf("ProxyCommand=%s ssh-proxy %s", sshQuote(self), sb), "root@" + sb}, nil
 }
 
 func shell(args []string) error {
@@ -357,6 +354,24 @@ func shell(args []string) error {
 	return nil
 }
 
+// sshQuote makes a path safe for an ssh_config value or a ProxyCommand.
+func sshQuote(p string) string { return `"` + filepath.ToSlash(p) + `"` }
+
+// withoutHost returns an ssh_config text with the "Host <name>" block removed.
+func withoutHost(cfg, name string) string {
+	var out []string
+	skip := false
+	for _, line := range strings.SplitAfter(cfg, "\n") {
+		if f := strings.Fields(line); len(f) > 0 && strings.EqualFold(f[0], "Host") {
+			skip = len(f) == 2 && f[1] == name
+		}
+		if !skip && line != "" {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "")
+}
+
 // code writes a managed SSH config include and launches VS Code Remote-SSH.
 func code(args []string) error {
 	if len(args) < 1 {
@@ -368,12 +383,18 @@ func code(args []string) error {
 	}
 	self, _ := os.Executable()
 	h, _ := os.UserHomeDir()
-	cfg := fmt.Sprintf("Host agentbox-%[1]s\n  HostName %[1]s\n  User root\n  IdentityFile %[2]s\n  IdentitiesOnly yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  ProxyCommand %[3]s ssh-proxy %[1]s\n\n", args[0], priv, self)
+	// Paths are quoted (C:\Program Files has a space) and use forward slashes, which
+	// both Windows OpenSSH and a POSIX ssh (Git for Windows, which runs the
+	// ProxyCommand through a shell that would eat backslashes) read correctly.
+	cfg := fmt.Sprintf("Host agentbox-%[1]s\n  HostName %[1]s\n  User root\n  IdentityFile %[2]s\n  IdentitiesOnly yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  ProxyCommand %[3]s ssh-proxy %[1]s\n\n",
+		args[0], sshQuote(priv), sshQuote(self))
 	p := filepath.Join(h, ".ssh", "agentbox_config")
 	os.MkdirAll(filepath.Dir(p), 0o700)
 	old, _ := os.ReadFile(p)
-	if !strings.Contains(string(old), "Host agentbox-"+args[0]+"\n") {
-		os.WriteFile(p, append(old, []byte(cfg)...), 0o600)
+	// Replace this sandbox's entry rather than keeping a stale one (the CLI may
+	// have moved since it was written, for example to another install location).
+	if err := os.WriteFile(p, []byte(withoutHost(string(old), "agentbox-"+args[0])+cfg), 0o600); err != nil {
+		return err
 	}
 	fmt.Printf("SSH entry agentbox-%s written to %s (add \"Include agentbox_config\" to ~/.ssh/config)\n", args[0], p)
 	if path, err := exec.LookPath("code"); err == nil {
@@ -516,8 +537,8 @@ func doctor() error {
 	} else {
 		fmt.Println()
 		fmt.Println("--- appliance")
-		for _, k := range []string{"pcr11", "secure_boot", "tpm_path", "kernel", "time", "time_source", "addresses", "default_route", "agentbox_hosts", "data_disk", "services", "nft_agentbox_table"} {
-			if v, ok := d[k]; ok && fmt.Sprint(v) != "" {
+		for _, k := range []string{"pcr11", "pcr11_error", "measure_error", "secure_boot", "tpm_path", "modules", "kernel", "time", "time_source", "addresses", "default_route", "agentbox_hosts", "data_disk", "services", "faults", "tpm_devices", "nft_agentbox_table"} {
+			if v, ok := d[k]; ok && fmt.Sprint(v) != "" && fmt.Sprint(v) != "map[]" {
 				fmt.Printf("%-18s %v", k, v)
 				fmt.Println()
 			}
@@ -526,6 +547,24 @@ func doctor() error {
 			fmt.Println()
 			fmt.Println("--- appliance journal (tail)")
 			fmt.Println(j)
+		}
+	}
+	var probe []struct {
+		Name   string `json:"name"`
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+		Ms     int64  `json:"ms"`
+	}
+	if err := cl.Do("GET", "/v1/tpmprobe", nil, &probe); err == nil {
+		fmt.Println()
+		fmt.Println("--- TPM probe (each operation tried on its own)")
+		for _, p := range probe {
+			state := "ok  "
+			if !p.OK {
+				state = "FAIL"
+			}
+			fmt.Printf("[%s] %-62s %5d ms  %s", state, p.Name, p.Ms, p.Detail)
+			fmt.Println()
 		}
 	}
 	fmt.Println()

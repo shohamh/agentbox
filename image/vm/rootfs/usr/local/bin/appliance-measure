@@ -2,9 +2,26 @@
 # Measured boot of the appliance userspace: hash every measured file and extend
 # it into PCR 11 of the (virtual) TPM, once per boot. The event log lets the
 # verifier replay the PCR and name any file that differs from the release.
-set -eu
+#
+# A failure here must not stop the appliance from starting: without a good
+# measurement the verifier simply refuses the appliance, and the reason is
+# reported by `agentbox doctor` (it reads /run/agentbox/measure.error).
 mkdir -p /run/agentbox
-TPM=/dev/tpmrm0; [ -e "$TPM" ] || TPM=/dev/tpm0
 # The TPM resets its PCRs at every VM boot; refuse to measure twice in one boot.
 if [ -s /run/agentbox/eventlog.json ]; then echo "already measured in this boot"; exit 0; fi
-exec agentbox-measure boot -tpm "$TPM" -log /run/agentbox/eventlog.json
+# The device node appears when the TPM driver loads.
+TPM=""
+for _ in $(seq 1 60); do
+  for d in /dev/tpmrm0 /dev/tpm0; do [ -e "$d" ] && TPM="$d" && break; done
+  [ -n "$TPM" ] && break
+  sleep 0.5
+done
+if [ -z "$TPM" ]; then
+  echo "no TPM device (/dev/tpmrm0 or /dev/tpm0) after 30 s; is the virtual TPM enabled on the VM?" | tee /run/agentbox/measure.error
+  exit 0
+fi
+if ! agentbox-measure boot -tpm "$TPM" -log /run/agentbox/eventlog.json 2>/run/agentbox/measure.error; then
+  cat /run/agentbox/measure.error
+  exit 0
+fi
+rm -f /run/agentbox/measure.error

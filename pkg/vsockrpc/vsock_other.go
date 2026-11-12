@@ -13,3 +13,5 @@ func listenVsock(string) (net.Listener, error) { return nil, fmt.Errorf("vsock u
 func dialVsock(context.Context, string, string) (net.Conn, error) {
 	return nil, fmt.Errorf("vsock unsupported")
 }
+
+func ListenGuests(uint32) (net.Listener, error) { return nil, fmt.Errorf("vsock unsupported") }

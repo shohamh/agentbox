@@ -56,6 +56,9 @@ type Config struct {
 	CPUs       int    `json:"cpus"`        // default 4
 	DataGB     int    `json:"data_gb"`     // default 20
 	LogFile    string `json:"log_file"`
+	// The appliance reaches the control plane through this host over vsock.
+	UplinkPorts  []int  `json:"uplink_ports"`  // default 443, 8443, 4318, 5000, 18443
+	UplinkTarget string `json:"uplink_target"` // default 127.0.0.1
 }
 
 type host struct {
@@ -110,16 +113,23 @@ func serve(path string) {
 		log.Fatal(err)
 	}
 	h := &host{cfg: cfg, drv: drv}
-	h.app = vsockrpc.Client(drv.ChannelAddr(), 90*time.Second)
+	h.app = vsockrpc.ClientFunc(drv.ChannelAddr, 90*time.Second)
 	if pem, err := os.ReadFile(cfg.CARootFile); err == nil {
 		h.caPool = x509.NewCertPool()
 		h.caPool.AppendCertsFromPEM(pem)
 	}
+	h.startUplink()
 	if cfg.Driver != "container" {
 		// Start in the background: the CLI works (and reports) while the VM boots.
+		// Keep trying: the host may be short of memory right now, or Hyper-V busy.
 		go func() {
-			if err := drv.Start(context.Background()); err != nil {
-				log.Printf("start appliance: %v", err)
+			for {
+				err := drv.Start(context.Background())
+				if err == nil {
+					return
+				}
+				log.Printf("start appliance: %v (retrying in 30s)", err)
+				time.Sleep(30 * time.Second)
 			}
 		}()
 		onStop = func() {

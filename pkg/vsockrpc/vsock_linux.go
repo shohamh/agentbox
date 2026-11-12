@@ -36,3 +36,6 @@ func dialVsock(ctx context.Context, scheme, rest string) (net.Conn, error) {
 	}
 	return vsock.Dial(uint32(cid), uint32(port), nil)
 }
+
+// ListenGuests accepts connections made by guest VMs to this host's vsock port.
+func ListenGuests(port uint32) (net.Listener, error) { return vsock.Listen(port, nil) }

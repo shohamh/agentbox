@@ -107,23 +107,30 @@ func (h *hypervDriver) Checks() []Check {
 	return cs
 }
 
-// registerVsock maps the Hyper-V socket service GUID of vsock port 7000, so
-// the Linux guest's AF_VSOCK listener is reachable from this host.
-func registerVsock() error {
-	g := vsockrpc.VsockServiceID(vsockPort)
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices\`+g.String(), registry.SET_VALUE)
-	if err != nil {
-		return err
+// registerVsock maps the Hyper-V socket service GUIDs of the vsock ports in use
+// (7000 for control, the uplink ports for the control plane) so the Linux guest's
+// AF_VSOCK sockets reach this host.
+func (h *hypervDriver) registerVsock() error {
+	for _, port := range append([]int{vsockPort}, h.cfg.uplinkPorts()...) {
+		g := vsockrpc.VsockServiceID(uint32(port))
+		k, _, err := registry.CreateKey(registry.LOCAL_MACHINE,
+			`SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices\`+g.String(), registry.SET_VALUE)
+		if err != nil {
+			return err
+		}
+		err = k.SetStringValue("ElementName", fmt.Sprintf("Agentbox vsock port %d", port))
+		k.Close()
+		if err != nil {
+			return err
+		}
 	}
-	defer k.Close()
-	return k.SetStringValue("ElementName", "Agentbox control channel")
+	return nil
 }
 
 func q(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
 func (h *hypervDriver) Start(ctx context.Context) error {
-	if err := registerVsock(); err != nil {
+	if err := h.registerVsock(); err != nil {
 		return fmt.Errorf("register hvsock service: %w", err)
 	}
 	dir := h.cfg.StateDir
@@ -157,7 +164,16 @@ if ($vm) {
   Disable-VMIntegrationService -VMName $name -Name 'Guest Service Interface','Key-Value Pair Exchange'
   Enable-VMIntegrationService -VMName $name -Name 'Heartbeat','Time Synchronization'
 }
-Start-VM -Name $name`, vmName, q(dir), q(base), q(diff), q(data), h.cfg.DataGB, h.cfg.MemoryMB, q(h.cfg.SwitchName), h.cfg.CPUs)
+# Static memory must be free at start: when the PC is short of RAM (other VMs, Docker,
+# games) fall back to smaller sizes rather than failing.
+$sizes = @(%[7]d, 3072, 2048, 1536) | Where-Object { $_ -le %[7]d } | Select-Object -Unique
+$started = $false
+foreach ($mb in $sizes) {
+  Set-VM -Name $name -MemoryStartupBytes ($mb * 1MB)
+  try { Start-VM -Name $name -ErrorAction Stop; $started = $true; Write-Output "started with $mb MB"; break }
+  catch { $last = $_ }
+}
+if (-not $started) { throw $last }`, vmName, q(dir), q(base), q(diff), q(data), h.cfg.DataGB, h.cfg.MemoryMB, q(h.cfg.SwitchName), h.cfg.CPUs)
 	if out, err := ps(ctx, script); err != nil {
 		return fmt.Errorf("start the appliance VM: %v: %s", err, out)
 	}

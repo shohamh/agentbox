@@ -5,6 +5,7 @@
 /usr/local/bin/agentbox-data
 /usr/local/bin/agentbox-manager
 /usr/local/bin/agentbox-measure
+/usr/local/bin/agentbox-uplink
 /usr/local/bin/runsc
 /usr/local/bin/envoy
 /usr/local/bin/otelcol-contrib
@@ -17,3 +18,4 @@
 /etc/agentbox/release.json
 /etc/systemd/system/agentbox-appliance.service
 /etc/systemd/system/agentbox-measure.service
+/etc/systemd/system/agentbox-uplink.service

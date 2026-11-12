@@ -217,7 +217,7 @@ func TestE2E_05_InteractiveSessions(t *testing.T) {
 	// stdin, never on a command line). The plan's P3 is the overhead of the local Envoy and
 	// the front gateway, so LiteLLM and the model server are on both sides of the difference.
 	var directMs []float64
-	if mk := masterKey(t); mk != "" {
+	if mk := masterKey(t); mk != "" && hasSvc(app1) {
 		script := curlLoop(`-H "Authorization: Bearer `+mk+`"`, "http://litellm:4000/v1/chat/completions")
 		if r := dexec(t, app1, 2*time.Minute, script, "sh", "-s"); r.Code == 0 {
 			directMs = timings(r.Out)
@@ -342,6 +342,10 @@ func TestE2E_06_NoKeyAnywhereAndTokenReplay(t *testing.T) {
 		svc  string
 		sb   *sbInfo
 	}{{"sandbox", "", &s1}, {"appliance", app1, nil}, {"PC", pc1, nil}} {
+		if where.svc == app1 && !hasSvc(app1) {
+			t.Logf("appliance %q is not a container here (a Hyper-V VM): its scan and the replay from it are skipped", app1)
+			continue
+		}
 		out := scanFor(t, where.svc, master, where.sb)
 		if !strings.Contains(out, "MASTER_HITS=0") || !strings.Contains(out, "SK_HITS=0") {
 			t.Errorf("model credential found in the %s (environment, files or process memory): %s", where.name, out)
@@ -351,8 +355,10 @@ func TestE2E_06_NoKeyAnywhereAndTokenReplay(t *testing.T) {
 	tok := sandboxToken(t, s1)
 	since := time.Now()
 	// replay from the appliance itself (the "host"), from another sandbox, and from another PC
-	if code, out := rawModelCall(t, app1, tok); code != 403 || !strings.Contains(out, "token_relay") {
-		t.Errorf("replay from the appliance host: status %d, body %q; want 403 token_relay", code, out)
+	if hasSvc(app1) {
+		if code, out := rawModelCall(t, app1, tok); code != 403 || !strings.Contains(out, "token_relay") {
+			t.Errorf("replay from the appliance host: status %d, body %q; want 403 token_relay", code, out)
+		}
 	}
 	if c := modelCalls(t, s2, "deepseek-v3", 1, tok)[0]; c.Code != 403 || !strings.Contains(c.Body, "token_relay") {
 		t.Errorf("replay from another sandbox: %d %s; want 403 token_relay", c.Code, c.Body)
