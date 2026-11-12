@@ -12,6 +12,7 @@ the build plan and runs end to end on Docker.
 | Developers using the sandboxes (Claude Code, Codex, opencode, omp, Orca, your own agent) | [docs/user-guide.md](docs/user-guide.md) |
 | The people who run the company LiteLLM (short-lived per-sandbox keys, readiness check) | [docs/litellm-admin.md](docs/litellm-admin.md) |
 | Whoever deploys it on the company network: what is ready, what to replace, the order of work | [docs/deployment.md](docs/deployment.md) |
+| The original build plan this repository implements | [docs/build-plan.md](docs/build-plan.md) |
 | Windows PCs with Hyper-V | [docs/hyperv.md](docs/hyperv.md) |
 | Operators | [docs/runbooks](docs/runbooks/README.md), [docs/testing.md](docs/testing.md) |
 
