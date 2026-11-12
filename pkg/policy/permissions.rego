@@ -85,3 +85,15 @@ instant if {
 }
 
 reason := sprintf("%s for %s", [class, input.permission])
+
+# --- model:<name>: only models the platform serves (the catalog) can be asked for.
+# One the group already allows needs no request; another one is for an approver.
+never if {
+	input.kind == "model"
+	not input.value in input.catalog.models
+}
+
+instant if {
+	input.kind == "model"
+	input.value in input.group.models
+}

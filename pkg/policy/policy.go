@@ -200,11 +200,12 @@ func (c *Classifier) Classify(ctx context.Context, perm string, u User, g GroupP
 	input := map[string]any{
 		"permission": perm, "kind": kind, "value": value,
 		"user":  map[string]any{"name": u.Name, "group": u.Group, "tier": u.Tier},
-		"group": map[string]any{"images": g.Images, "tier_cap": g.TierCap},
+		"group": map[string]any{"images": g.Images, "tier_cap": g.TierCap, "models": nz(g.Models)},
 		"catalog": map[string]any{
 			"images": images,
 			"egress": map[string]any{"auto": nz(cat.Egress.Auto), "flagged": nz(cat.Egress.Flagged), "never": nz(cat.Egress.Never)},
 			"project_roots": nz(cat.ProjectRoots),
+			"models":        nz(cat.Models),
 		},
 		"auto_rules": nz(autoRules),
 	}

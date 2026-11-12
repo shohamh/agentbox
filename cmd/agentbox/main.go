@@ -46,7 +46,8 @@ const usage = `agentbox - sandboxed AI coding agents on your own PC
   ssh-proxy <sb>                       ProxyCommand for ssh and IDEs
   code <sb>                            open in VS Code Remote-SSH
   preview <sb> <port> [--listen :N]    forward a web preview to localhost
-  allow <kind:value> --reason "..."    request a permission (egress:host, image:name, port:n, tier:n)
+  forward <sb> <port> [--listen :N]    raw TCP port forward (needs: allow port:<n>)
+  allow <kind:value> --reason "..."    request a permission (egress:host, image:name, port:n, tier:n, model:name)
   perms                                list your permission requests
   key <sb>                             base URLs and the local token for a sandbox
   up | recycle-appliance | doctor
@@ -81,6 +82,8 @@ func main() {
 		err = code(args)
 	case "preview":
 		err = preview(args)
+	case "forward":
+		err = forward(args)
 	case "allow":
 		err = allow(args)
 	case "perms":

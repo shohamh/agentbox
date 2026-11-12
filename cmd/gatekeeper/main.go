@@ -53,6 +53,7 @@ type state struct {
 	users   map[string]user
 	kills   map[string]kill
 	models  map[string][]string // device -> models from its current bundle
+	tiers   map[string]int      // device -> tier from its current bundle (the user's tier plus granted ones)
 	spend   map[string]float64
 }
 
@@ -127,7 +128,7 @@ func envOr(k, d string) string {
 }
 
 func (s *server) refresh(ctx context.Context) {
-	st := state{devices: map[string]device{}, users: map[string]user{}, kills: map[string]kill{}, models: map[string][]string{}, spend: map[string]float64{}}
+	st := state{devices: map[string]device{}, users: map[string]user{}, kills: map[string]kill{}, models: map[string][]string{}, tiers: map[string]int{}, spend: map[string]float64{}}
 	rows, err := s.pool.Query(ctx, `SELECT device_id, username, attestation_status, assurance_level, revoked, revoked_reason FROM devices`)
 	if err != nil {
 		log.Printf("refresh devices: %v", err)
@@ -172,6 +173,7 @@ func (s *server) refresh(ctx context.Context) {
 		if json.Unmarshal(raw, &sb) == nil {
 			if b, err := bundle.Decode(&sb); err == nil {
 				st.models[id] = b.Models
+				st.tiers[id] = b.Tier
 			}
 		}
 	}
@@ -270,15 +272,22 @@ func (s *server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 			return s.deny(403, "model_not_allowed", fmt.Sprintf("model %s is not in your policy (allowed: %s)", model, strings.Join(allowed, ", ")), ev), nil
 		}
 	}
-	if u.Tier > levelCap(d.Level) {
-		return s.deny(403, "assurance_level", fmt.Sprintf("tier %d needs assurance level B or higher; this PC is at level %s", u.Tier, d.Level), ev), nil
+	// The tier comes from the device's signed bundle: the user's tier plus any tier
+	// permission an approver granted, so a granted tier is checked against the
+	// device's assurance level like any other.
+	tier := u.Tier
+	if t := st.tiers[id.Device]; t > 0 {
+		tier = t
+	}
+	if tier > levelCap(d.Level) {
+		return s.deny(403, "assurance_level", fmt.Sprintf("tier %d needs assurance level B or higher; this PC is at level %s", tier, d.Level), ev), nil
 	}
 	if sp := st.spend[id.User]; sp >= u.Budget {
 		return s.deny(402, "budget_exceeded", fmt.Sprintf("model budget exhausted for %s: $%.4f used of $%.4f. Ask an admin to raise it in the console.", id.User, sp, u.Budget), ev), nil
 	}
 	// Key generation outlives the request: if Envoy gives up after its authz
 	// timeout, the key is still created and cached for the retry.
-	subject := keymint.Subject{User: id.User, Device: id.Device, Sandbox: headers["x-agentbox-sandbox"], Tier: u.Tier, Models: st.models[id.Device]}
+	subject := keymint.Subject{User: id.User, Device: id.Device, Sandbox: headers["x-agentbox-sandbox"], Tier: tier, Models: st.models[id.Device]}
 	if rem := u.Budget - st.spend[id.User]; rem > 0 {
 		subject.MaxBudget = rem
 	}
@@ -291,7 +300,7 @@ func (s *server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 		"authorization":      "Bearer " + key,
 		"x-agentbox-user":    id.User,
 		"x-agentbox-device":  id.Device,
-		"x-agentbox-tier":    fmt.Sprint(u.Tier),
+		"x-agentbox-tier":    fmt.Sprint(tier),
 		"x-agentbox-model":   model,
 		"x-agentbox-group":   u.Group,
 	}

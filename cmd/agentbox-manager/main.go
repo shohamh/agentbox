@@ -243,6 +243,24 @@ func (m *Manager) bundleValid() (*bundle.Bundle, string) {
 	return b, ""
 }
 
+// NonModelGrace is how long permissions other than model access (egress,
+// images, ports) keep applying after the policy bundle has expired and could not
+// be renewed: the control plane may be down for a weekend. Model access ends at
+// expiry (bundleValid).
+const NonModelGrace = 72 * time.Hour
+
+// bundleUsable is bundleValid for everything that is not a model call.
+func (m *Manager) bundleUsable() (*bundle.Bundle, string) {
+	b := m.currentBundle()
+	if b == nil {
+		return nil, "no policy bundle yet (appliance not enrolled or never reached the control plane)"
+	}
+	if time.Now().After(b.ExpiresAt.Add(NonModelGrace)) {
+		return b, "policy bundle expired more than 72 hours ago and could not be renewed (control plane unreachable)"
+	}
+	return b, ""
+}
+
 func (m *Manager) emit(name string, attrs map[string]any) { m.ev.Emit(name, attrs) }
 
 var _ = context.Background

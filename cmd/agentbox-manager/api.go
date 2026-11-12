@@ -228,10 +228,11 @@ func (m *Manager) apiTunnel(w http.ResponseWriter, r *http.Request) {
 		port = 22
 	}
 	if port != 22 {
-		b := m.currentBundle()
 		allowed := false
-		for _, p := range b.Ports {
-			allowed = allowed || p == port
+		if b, _ := m.bundleUsable(); b != nil { // no bundle at all: nothing is allowed (and nothing to dereference)
+			for _, p := range b.Ports {
+				allowed = allowed || p == port
+			}
 		}
 		if !allowed {
 			errOut(w, 403, fmt.Errorf("raw TCP tunnel to port %d needs a flagged permission: agentbox allow port:%d --reason \"...\"; use agentbox preview for web apps", port, port))

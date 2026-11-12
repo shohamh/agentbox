@@ -71,9 +71,12 @@ func main() {
 	}, db.ChanPolicy, db.ChanBundle, db.ChanCommands)
 	go func() {
 		s.rebuildAll(ctx)
-		for range time.Tick(5 * time.Minute) {
-			s.expireGrants(ctx)
-			s.rebuildAll(ctx)
+		for i := 1; ; i++ {
+			time.Sleep(15 * time.Second)
+			s.expireGrants(ctx) // a time-boxed grant ends within seconds of its expiry
+			if i%20 == 0 {
+				s.rebuildAll(ctx) // every 5 minutes: re-sign bundles that are half way to expiry
+			}
 		}
 	}()
 
@@ -367,9 +370,16 @@ func (s *svc) request(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err.Error())
 		return
 	}
+	if kind, _, _ := strings.Cut(strings.TrimSpace(in.Permission), ":"); kind == "mount" {
+		fail(w, 501, "mount permissions are not available in this version: a sandbox works on a clone of your repository (agentbox new <repo>); bring changes back with git fetch over the sandbox's SSH entry (see the user guide)")
+		return
+	}
 	class, err := s.cls.Classify(ctx, in.Permission, u, g, cat, rules)
 	if err != nil {
 		fail(w, 400, err.Error())
+		return
+	}
+	if s.renewOrReuse(ctx, w, a, in.Permission) {
 		return
 	}
 	status, review := "pending", "none"
@@ -406,6 +416,33 @@ func (s *svc) request(w http.ResponseWriter, r *http.Request) {
 	}
 	db.Notify(ctx, s.pool, db.ChanConsole, "requests")
 	writeJSON(w, 200, out)
+}
+
+// renewOrReuse handles asking again for something the user already holds. An
+// automatic grant is reported as already allowed. A flagged grant is renewed for
+// another 14 days with the same command ("flagged grants last 14 days unless
+// renewed with one command"). A grant an approver time-boxed is not extended by
+// asking again: that needs a new approval, so it falls through.
+func (s *svc) renewOrReuse(ctx context.Context, w http.ResponseWriter, a identity.Appliance, perm string) bool {
+	row := s.pool.QueryRow(ctx, `SELECT `+reqCols+` FROM requests WHERE username=$1 AND permission=$2 AND status IN ('active','approved')
+		AND (expires_at IS NULL OR expires_at > now()) AND class IN ('instant','flagged') ORDER BY id DESC LIMIT 1`, a.User, perm)
+	cur, err := scanReq(row)
+	if err != nil {
+		return false
+	}
+	if cur.Class == "flagged" {
+		t := time.Now().Add(14 * 24 * time.Hour)
+		s.pool.Exec(ctx, `UPDATE requests SET expires_at=$2 WHERE id=$1`, cur.ID, t)
+		cur.ExpiresAt = &t
+		cur.Message = "renewed for 14 days"
+		s.pool.Exec(ctx, `INSERT INTO audit(actor, role, action, target, detail) VALUES($1,'user','permission.renewed',$2,'{}')`, a.User, perm)
+		s.rebuildUser(ctx, a.User)
+	} else {
+		cur.Message = "you already have this permission (applied automatically)"
+	}
+	db.Notify(ctx, s.pool, db.ChanConsole, "requests")
+	writeJSON(w, 200, cur)
+	return true
 }
 
 func scanReq(row pgx.Row) (reqOut, error) {
@@ -464,9 +501,26 @@ func (s *svc) getRequest(w http.ResponseWriter, r *http.Request) {
 
 // ---------- bundles ----------
 
+// expireGrants ends grants whose time is up and re-signs the bundles of the
+// users who held them, so the permission stops applying on the appliance within
+// seconds, not at the next scheduled rebuild.
 func (s *svc) expireGrants(ctx context.Context) {
-	tag, err := s.pool.Exec(ctx, `UPDATE requests SET status='expired' WHERE status IN ('active','approved') AND expires_at IS NOT NULL AND expires_at < now()`)
-	if err == nil && tag.RowsAffected() > 0 {
+	rows, err := s.pool.Query(ctx, `UPDATE requests SET status='expired' WHERE status IN ('active','approved') AND expires_at IS NOT NULL AND expires_at < now() RETURNING username, permission`)
+	if err != nil {
+		return
+	}
+	users := map[string]bool{}
+	for rows.Next() {
+		var u, p string
+		rows.Scan(&u, &p)
+		users[u] = true
+		s.pool.Exec(ctx, `INSERT INTO audit(actor, role, action, target, detail) VALUES('policy','system','permission.expired',$1,$2)`, p, `{"user":"`+u+`"}`)
+	}
+	rows.Close()
+	for u := range users {
+		s.rebuildUser(ctx, u)
+	}
+	if len(users) > 0 {
 		db.Notify(ctx, s.pool, db.ChanConsole, "requests")
 	}
 }

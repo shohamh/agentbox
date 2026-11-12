@@ -149,7 +149,7 @@ func (m *Manager) sandboxFor(remote string) *Sandbox {
 }
 
 func (m *Manager) egressAllowed(s *Sandbox, host string) (bool, string) {
-	b, why := m.bundleValid()
+	b, why := m.bundleUsable() // egress is not a model call: 72 hours of grace after expiry
 	if why != "" {
 		return false, why
 	}

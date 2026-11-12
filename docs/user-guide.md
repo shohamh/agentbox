@@ -83,6 +83,7 @@ administrators if Orca cannot use the entry.
 ```bash
 agentbox preview work 3000            # http://localhost:3000 on your PC shows port 3000 of the sandbox
 ```
+agentbox forward work 5432            # raw TCP (a database, a debugger): needs `agentbox allow port:5432 --reason "..."`
 
 ## Another agent, or a tool of your own
 
@@ -142,16 +143,20 @@ The service tells you why, in plain words:
 
 | Message | What it means | What to do |
 |---|---|---|
-| `model X is not in your policy (allowed: …)` | the tool asked for a model your group may not use | use one from the list, or ask your administrators to add the model to your group |
+| `model X is not in your policy (allowed: …)` | the tool asked for a model your group may not use | use one from the list, or `agentbox allow model:<name> --reason "…"` (an approver decides) |
 | `model budget exhausted for you: $x used of $y` | your spend limit is reached | ask your administrator to raise it |
 | `all model access is paused by an administrator (…)` / `model X is switched off …` | a kill switch is on | wait: the reason is in the message |
 | `appliance attestation is …; model access is off until it passes` | this PC's agent platform failed its integrity check | `agentbox status`, then `agentbox doctor`; contact IT |
 | `device … was revoked` | an administrator revoked this PC | contact IT; you re-enroll after review |
+agentbox allow model:small --reason "A cheap model for the log summarizer"
+agentbox allow port:5432 --reason "Debug the database in my sandbox from my IDE"
 | `model service unreachable, try again shortly` | the company model service is down or unreachable | try again; running work continues, `agentbox status` shows the layer that is down |
 | `image "x" is not in your policy` | the image is not allowed for you | `agentbox allow image:x --reason "…"` |
 
 `agentbox status` shows every layer with a fix for the one that is wrong.
 `agentbox doctor` prints what support needs (no secrets in it).
+Everything about permissions, including what each kind changes, expiry and renewal,
+is in [permissions.md](permissions.md).
 
 ## What is recorded
 

@@ -62,6 +62,13 @@ Knobs: `PERF_STRICT=1` makes the performance targets (P1, P3, shell latency) fai
 The company-LiteLLM deployment path (`external-litellm.yml`, the front Envoy's upstream, TLS from a private CA behind a proxy that only answers for its own host name) is proven by
 `scripts/test-external-litellm.sh`: it starts a second LiteLLM, stops the bundled one, points the gateway at it, and reruns E2E-03, 16, 18 and 20 over HTTP and then over HTTPS. Run it against a running bed.
 
+| E2E-21 | Permission `image:`: the group lacks the omp image; request, approve as an approver | The request waits for an approver; once approved `agentbox new --image omp` works; an image outside the catalog is refused (`never`) |
+| E2E-22 | Permission `model:`: a model outside the policy | Refused with the reason; approved, it answers; rolled back, refused again; an unknown model is `never` |
+| E2E-23 | Permission `port:`: raw TCP forward | `agentbox forward` is refused with the command to run; ports 4000, 3128 and 53 are `never`; flagged and applied at once for others; data flows through the forward once granted |
+| E2E-24 | Permission `tier:` | Tier 2 (within the PC's assurance level) works; tier 3 is refused at the gateway with a message that says why; rolled back, access returns; tier 4 is `never` |
+| E2E-25 | Permission `mount:` and the mandatory reason | `mount` is refused with an explanation and no grant is recorded; a request without a reason is refused |
+| E2E-26 | Expiry and renewal | An approver's time box ends within 45 s of its expiry (egress closes, the request shows `expired`); asking again for a flagged grant renews it (no duplicate); an automatic grant is reported as already held |
+| E2E-27 | An administrator turns a request into a rule | An approver cannot create rules; afterwards the same request from another user is automatic |
 Unit tests for the same properties: `pkg/keymint` (key lifetime, rotation, revocation, cleanup), `pkg/llmcheck` (the check fails on a proxy that ignores expiry or deletion, or lacks the Messages API), `cmd/agentbox-manager` (model names given to sandboxes).
 
 Degraded mode (plan: offline operation table): E2E-11 permission service down, E2E-12 gateway authorizer down (fails closed), E2E-13 LiteLLM down (no harness hang),
