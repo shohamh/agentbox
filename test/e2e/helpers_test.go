@@ -634,6 +634,10 @@ func runTask(t testing.TB, s sbInfo, harness, task string) (Result, time.Time) {
 		cmd = fmt.Sprintf("codex exec --skip-git-repo-check %q", task)
 	case "opencode":
 		cmd = fmt.Sprintf("opencode run %q", task)
+	case "claude-code":
+		cmd = fmt.Sprintf("claude -p %q", task)
+	case "omp":
+		cmd = fmt.Sprintf("omp -p %q", task)
 	default:
 		t.Fatalf("unknown harness %s", harness)
 	}

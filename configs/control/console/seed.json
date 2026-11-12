@@ -54,7 +54,9 @@
       "images": [
         "base",
         "codex",
-        "opencode"
+        "opencode",
+        "claude-code",
+        "omp"
       ],
       "tier_cap": 3,
       "limits": {

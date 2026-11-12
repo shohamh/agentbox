@@ -1,0 +1,9 @@
+#!/bin/sh
+# Installed as `claude`; the real binary is claude.real. The sandbox token goes in
+# as a bearer token (ANTHROPIC_AUTH_TOKEN), not as ANTHROPIC_API_KEY: an API key in
+# the environment makes Claude Code ask, on every first start, whether to use it.
+if [ -n "$AGENTBOX_TOKEN" ]; then
+  unset ANTHROPIC_API_KEY
+  export ANTHROPIC_AUTH_TOKEN="$AGENTBOX_TOKEN"
+fi
+exec /usr/local/bin/claude.real "$@"

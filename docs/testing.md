@@ -53,6 +53,16 @@ Knobs: `PERF_STRICT=1` makes the performance targets (P1, P3, shell latency) fai
 | E2E-08 | Agent tries a host outside its egress list | Blocked; `egress.denied` event, D7 alert, timeline entry |
 | E2E-09 | Cut the appliance off from the control plane mid-task (nftables), then restore | Sandboxes keep running; model calls fail with a message; status reports the outage; the PC recovers on its own (O3) |
 | E2E-10 | Enroll pc-t, whose appliance image is modified | Console shows failed attestation with the diff and a D3 alert; no sandbox or model access |
+| E2E-16 | Claude Code runs a real task, then starts interactively | The suite passes in the sandbox; `model.call`, `gen_ai.tool_call` and `process.exec` events carry the user and device; every model name used is in the policy; no gateway denial; no first-run question stands in front of the prompt |
+| E2E-17 | omp (Oh My Pi) runs the same task | Same assertions |
+| E2E-18 | Model keys | The key LiteLLM holds for the sandbox is bound to its user, device and sandbox, expires within `KEY_TTL` (90 s in the bed, 15 minutes by default), lists only the policy's models, and has a per-key budget; the sandbox token is refused by LiteLLM itself; after the key ages it is replaced by a new one |
+| E2E-19 | Revoke a device in the console | Its LiteLLM keys are deleted within seconds; its sandbox gets no model answer; no new key is minted |
+| E2E-20 | The LiteLLM readiness check (`agentbox-preflight`) against the bed's LiteLLM | Every check passes (short keys, model scoping, the three APIs, streaming, expiry, deletion, callback); a wrong master key is reported |
+
+The company-LiteLLM deployment path (`external-litellm.yml`, the front Envoy's upstream, TLS from a private CA behind a proxy that only answers for its own host name) is proven by
+`scripts/test-external-litellm.sh`: it starts a second LiteLLM, stops the bundled one, points the gateway at it, and reruns E2E-03, 16, 18 and 20 over HTTP and then over HTTPS. Run it against a running bed.
+
+Unit tests for the same properties: `pkg/keymint` (key lifetime, rotation, revocation, cleanup), `pkg/llmcheck` (the check fails on a proxy that ignores expiry or deletion, or lacks the Messages API), `cmd/agentbox-manager` (model names given to sandboxes).
 
 Degraded mode (plan: offline operation table): E2E-11 permission service down, E2E-12 gateway authorizer down (fails closed), E2E-13 LiteLLM down (no harness hang),
 E2E-14 console down (enforcement continues), E2E-15 telemetry tier down (appliance events buffered and delivered afterwards).

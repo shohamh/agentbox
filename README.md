@@ -5,6 +5,16 @@ attested appliance and a central control plane for identity, policy, the model
 gateway, the admin console and telemetry. This repository implements phase 0 of
 the build plan and runs end to end on Docker.
 
+## Guides
+
+| For | Read |
+|---|---|
+| Developers using the sandboxes (Claude Code, Codex, opencode, omp, Orca, your own agent) | [docs/user-guide.md](docs/user-guide.md) |
+| The people who run the company LiteLLM (short-lived per-sandbox keys, readiness check) | [docs/litellm-admin.md](docs/litellm-admin.md) |
+| Whoever deploys it on the company network: what is ready, what to replace, the order of work | [docs/deployment.md](docs/deployment.md) |
+| Windows PCs with Hyper-V | [docs/hyperv.md](docs/hyperv.md) |
+| Operators | [docs/runbooks](docs/runbooks/README.md), [docs/testing.md](docs/testing.md) |
+
 ## What runs
 
 | Part | Where | Notes |
@@ -12,11 +22,11 @@ the build plan and runs end to end on Docker.
 | `agentbox` CLI, `agentbox-host` | PC | Linux and Windows builds (Windows is cross-compiled only) |
 | `agentbox-manager`, Envoy, OTel Collector, gVisor | appliance | per-task gVisor sandboxes, signed policy bundles, egress proxy, DNS allowlist |
 | Keycloak, step-ca, Postgres, ClickHouse, LiteLLM, front Envoy, gatekeeper, permsvc, reviewer, correlator, console, Grafana | control plane | `deploy/compose` |
-| `mockllm` | stands in for vLLM | deterministic OpenAI-compatible server, drives Codex CLI and opencode through real tool calls |
+| `mockllm` | stands in for vLLM | deterministic OpenAI-compatible server, drives Codex CLI, opencode, Claude Code and omp through real tool calls |
 
 In the test bed the appliance is a privileged container, the TPM is swtpm, and
-vsock is a private TCP network. Hyper-V and QEMU/KVM drivers are written
-(`cmd/agentbox-host`) but have not been run.
+vsock is a private TCP network. The Hyper-V driver has run on a real Windows PC
+(`docs/hyperv.md`); the QEMU/KVM driver boots under QEMU in tests.
 
 ## Run it
 

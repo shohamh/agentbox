@@ -5,8 +5,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 OUT="$(mktemp -d)"
+# Docker (a Windows program under Git Bash) needs a Windows path for the output
+# directory; this also works when MSYS_NO_PATHCONV=1 turned path conversion off.
+OUT_ARG="$OUT"; command -v cygpath >/dev/null 2>&1 && OUT_ARG="$(cygpath -m "$OUT")"
 ARGS="$*"
-docker build -q -f - --build-arg NONCE="$(date +%s%N)" --build-arg ARGS="$ARGS" --output "type=local,dest=$OUT" . >/dev/null <<'DOCKERFILE'
+docker build -q -f - --build-arg NONCE="$(date +%s%N)" --build-arg ARGS="$ARGS" --output "type=local,dest=$OUT_ARG" . >/dev/null <<'DOCKERFILE'
 # syntax=docker/dockerfile:1
 FROM golang:1.27-bookworm AS run
 ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false

@@ -6,11 +6,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -28,6 +26,7 @@ import (
 	"agentbox/pkg/db"
 	"agentbox/pkg/extauthz"
 	"agentbox/pkg/identity"
+	"agentbox/pkg/keymint"
 	"agentbox/pkg/otlp"
 )
 
@@ -61,20 +60,11 @@ type server struct {
 	authv3.UnimplementedAuthorizationServer
 	pool    *pgxpool.Pool
 	llmDB   *pgxpool.Pool
-	litellm string
-	master  string
+	mint    *keymint.Minter
 	ev      *otlp.Exporter
 
 	mu sync.RWMutex
 	st state
-
-	kmu  sync.Mutex
-	keys map[string]vkey // user|device|tier -> key
-}
-
-type vkey struct {
-	Key     string
-	Expires time.Time
 }
 
 func main() {
@@ -96,14 +86,26 @@ func main() {
 		log.Fatalf("master key: %v", err)
 	}
 	s := &server{
-		pool: pool, llmDB: llmDB, litellm: strings.TrimRight(os.Getenv("LITELLM_URL"), "/"),
-		master: strings.TrimSpace(string(master)), keys: map[string]vkey{},
+		pool: pool, llmDB: llmDB,
+		mint: keymint.New(keymint.Config{
+			LiteLLM: os.Getenv("LITELLM_URL"), Master: strings.TrimSpace(string(master)),
+			TTL: envDur("KEY_TTL", 15*time.Minute), RenewBefore: envDur("KEY_RENEW_BEFORE", 0),
+			RPM: envInt("KEY_RPM", 0), TPM: envInt("KEY_TPM", 0), Parallel: envInt("KEY_PARALLEL", 0),
+		}),
 		ev: otlp.New(os.Getenv("OTLP_ENDPOINT"), map[string]string{"service.name": "gatekeeper"}, nil),
 	}
 	s.refresh(ctx)
 	go func() {
 		for range time.Tick(2 * time.Second) {
 			s.refresh(ctx)
+		}
+	}()
+	log.Printf("model keys: one per sandbox, valid %s, minted on demand", s.mint.TTL())
+	go func() {
+		for range time.Tick(time.Minute) {
+			if n := s.mint.Prune(); n > 0 {
+				log.Printf("deleted %d expired LiteLLM keys", n)
+			}
 		}
 	}()
 	go http.ListenAndServe(":8082", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) }))
@@ -190,10 +192,15 @@ func (s *server) refresh(ctx context.Context) {
 	old := s.st
 	s.st = st
 	s.mu.Unlock()
-	// Delete LiteLLM keys of devices that were just revoked.
+	// A device that stops being trusted (revoked, or attestation no longer "pass")
+	// loses its LiteLLM keys now, not when they expire.
 	for id, d := range st.devices {
-		if d.Revoked && !old.devices[id].Revoked {
-			go s.dropKeys(id)
+		if o, had := old.devices[id]; had && trusted(o) && !trusted(d) {
+			go func(id string) {
+				if n := s.mint.RevokeDevice(id); n > 0 {
+					log.Printf("deleted %d LiteLLM keys of %s (no longer trusted)", n, id)
+				}
+			}(id)
 		}
 	}
 }
@@ -271,7 +278,11 @@ func (s *server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 	}
 	// Key generation outlives the request: if Envoy gives up after its authz
 	// timeout, the key is still created and cached for the retry.
-	key, err := s.key(context.WithoutCancel(ctx), id.User, id.Device, u.Tier, st.models[id.Device])
+	subject := keymint.Subject{User: id.User, Device: id.Device, Sandbox: headers["x-agentbox-sandbox"], Tier: u.Tier, Models: st.models[id.Device]}
+	if rem := u.Budget - st.spend[id.User]; rem > 0 {
+		subject.MaxBudget = rem
+	}
+	key, err := s.mint.Key(context.WithoutCancel(ctx), subject)
 	if err != nil {
 		log.Printf("key for %s/%s: %v", id.User, id.Device, err)
 		return s.deny(503, "model_service_unavailable", "model service unreachable, try again shortly", ev), nil
@@ -296,75 +307,26 @@ func contains(l []string, s string) bool {
 	return false
 }
 
-// key returns the LiteLLM virtual key for user, device and tier, creating or
-// rotating it (24-hour expiry) as needed.
-func (s *server) key(ctx context.Context, usr, dev string, tier int, models []string) (string, error) {
-	k := fmt.Sprintf("%s|%s|%d", usr, dev, tier)
-	s.kmu.Lock()
-	defer s.kmu.Unlock()
-	if v, ok := s.keys[k]; ok && time.Until(v.Expires) > time.Hour {
-		return v.Key, nil
-	}
-	body, _ := json.Marshal(map[string]any{
-		"key_alias": fmt.Sprintf("abx:%s:%s:t%d:%d", usr, dev, tier, time.Now().Unix()),
-		"user_id":   usr,
-		"models":    models,
-		"duration":  "24h",
-		"metadata":  map[string]any{"agentbox.user": usr, "agentbox.device": dev, "agentbox.tier": tier},
-	})
-	var out struct {
-		Key string `json:"key"`
-	}
-	if err := s.llm(ctx, "/key/generate", body, &out); err != nil {
-		return "", err
-	}
-	if old, ok := s.keys[k]; ok {
-		go s.deleteKeys([]string{old.Key})
-	}
-	s.keys[k] = vkey{Key: out.Key, Expires: time.Now().Add(24 * time.Hour)}
-	return out.Key, nil
-}
+// trusted reports whether a device may be given model keys at all.
+func trusted(d device) bool { return !d.Revoked && d.Attestation == "pass" }
 
-func (s *server) dropKeys(dev string) {
-	s.kmu.Lock()
-	var del []string
-	for k, v := range s.keys {
-		if strings.Split(k, "|")[1] == dev {
-			del = append(del, v.Key)
-			delete(s.keys, k)
+func envDur(k string, d time.Duration) time.Duration {
+	if v := os.Getenv(k); v != "" {
+		if x, err := time.ParseDuration(v); err == nil {
+			return x
 		}
+		log.Fatalf("%s=%q is not a duration such as 15m", k, v)
 	}
-	s.kmu.Unlock()
-	if len(del) > 0 {
-		s.deleteKeys(del)
-		log.Printf("deleted %d LiteLLM keys of revoked device %s", len(del), dev)
-	}
+	return d
 }
 
-func (s *server) deleteKeys(keys []string) {
-	body, _ := json.Marshal(map[string]any{"keys": keys})
-	if err := s.llm(context.Background(), "/key/delete", body, nil); err != nil {
-		log.Printf("delete keys: %v", err)
+func envInt(k string, d int) int {
+	if v := os.Getenv(k); v != "" {
+		var n int
+		if _, err := fmt.Sscan(v, &n); err != nil {
+			log.Fatalf("%s=%q is not a number", k, v)
+		}
+		return n
 	}
-}
-
-func (s *server) llm(ctx context.Context, path string, body []byte, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "POST", s.litellm+path, bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+s.master)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("litellm %s: %s: %s", path, resp.Status, data)
-	}
-	if out != nil {
-		return json.Unmarshal(data, out)
-	}
-	return nil
+	return d
 }

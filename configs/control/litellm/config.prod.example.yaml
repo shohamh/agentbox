@@ -1,0 +1,63 @@
+# Example LiteLLM configuration for Agentbox in front of real providers. Copy it
+# next to the abx_callback.py file, edit the model_list and the secrets, and run
+# scripts/preflight.sh against the result (docs/litellm-admin.md).
+#
+# Rules Agentbox relies on:
+#  * Every model_name below is a name callers use. The Agentbox group policy
+#    (console > Policy) lists the names a group may use; the FIRST
+#    name in a group's list is the default model every harness starts on. A name
+#    that looks small and fast (small, haiku, mini, flash, nano, lite, fast as a
+#    whole word) is what Claude Code uses for its background calls.
+#  * LiteLLM must serve /v1/chat/completions, /v1/messages (Claude Code) and
+#    /v1/responses (Codex) for each name, with streaming.
+#  * Keys are created by Agentbox's gateway with the master key. Nobody else
+#    needs to create keys for Agentbox users.
+model_list:
+  # A Claude model, for the default and for Claude Code.
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Models you host yourself (vLLM, TGI, any OpenAI-compatible server).
+  # - model_name: deepseek-v3
+  #   litellm_params:
+  #     model: openai/deepseek-v3            # "openai/" = OpenAI-compatible wire protocol
+  #     api_base: http://vllm.corp.example:8000/v1
+  #     api_key: os.environ/VLLM_API_KEY
+  #     input_cost_per_token: 0.000001       # without a price, spend and budgets stay at zero
+  #     output_cost_per_token: 0.000002
+
+  # Azure OpenAI
+  # - model_name: gpt-5
+  #   litellm_params:
+  #     model: azure/<deployment name>
+  #     api_base: https://<resource>.openai.azure.com
+  #     api_version: "2025-04-01-preview"
+  #     api_key: os.environ/AZURE_API_KEY
+
+  # Amazon Bedrock
+  # - model_name: bedrock-sonnet
+  #   litellm_params:
+  #     model: bedrock/<model id>
+  #     aws_region_name: us-east-1
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY     # the key Agentbox's gateway holds: keep it out of every other hand
+  database_url: os.environ/DATABASE_URL         # required: virtual keys, expiry and spend live here
+  allow_requests_on_db_unavailable: false       # a model call without a key check is never acceptable
+
+litellm_settings:
+  callbacks: abx_callback.handler               # model.call / gen_ai.tool_call events for the console (abx_callback.py on PYTHONPATH)
+  drop_params: true                             # harnesses send parameters some providers reject
+  num_retries: 0                                # the harness retries; a hidden retry doubles spend
+  request_timeout: 120
+  telemetry: false
+
+# Environment for the proxy process:
+#   OTLP_ENDPOINT=http://<agentbox otel gateway>:4319/v1/logs   (where abx_callback.py sends events)
+#   PYTHONPATH=/app                                              (where abx_callback.py is)

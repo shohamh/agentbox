@@ -17,11 +17,13 @@ mkdir -p "$(dirname "$OUT")"
 docker build -q -t agentbox-sandbox-base:dev sandbox-images/base >/dev/null
 docker build -q -t agentbox-sandbox-codex:dev --build-arg BASE=agentbox-sandbox-base:dev sandbox-images/codex >/dev/null
 docker build -q -t agentbox-sandbox-opencode:dev --build-arg BASE=agentbox-sandbox-base:dev sandbox-images/opencode >/dev/null
+docker build -q -t agentbox-sandbox-claude-code:dev --build-arg BASE=agentbox-sandbox-base:dev sandbox-images/claude-code >/dev/null
+docker build -q -t agentbox-sandbox-omp:dev --build-arg BASE=agentbox-sandbox-base:dev sandbox-images/omp >/dev/null
 
 json="{"
 sep=""
-for name in base codex opencode; do
-  harness=""; [ "$name" = codex ] && harness=codex; [ "$name" = opencode ] && harness=opencode
+for name in base codex opencode claude-code omp; do
+  harness=""; case "$name" in base) ;; *) harness="$name";; esac
   docker tag "agentbox-sandbox-$name:dev" "$PUSH/agentbox/$name:dev"
   for attempt in 1 2 3 4 5; do
     docker push -q "$PUSH/agentbox/$name:dev" >/dev/null && break

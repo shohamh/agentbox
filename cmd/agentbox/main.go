@@ -40,7 +40,7 @@ const usage = `agentbox - sandboxed AI coding agents on your own PC
 
   enroll [--user U --password-stdin]   sign in and register this PC
   status                               state of every layer, with fixes
-  new <repo> [--name N] [--image I] [--harness codex|opencode]
+  new <repo> [--name N] [--image I] [--harness codex|opencode|claude-code|omp]
   list | stop <sb> | start <sb> | rm <sb> | recycle <sb>
   shell <sb> [-- command...]           terminal in a sandbox (ssh)
   ssh-proxy <sb>                       ProxyCommand for ssh and IDEs
@@ -236,7 +236,7 @@ func newSandbox(args []string) error {
 	fs := flag.NewFlagSet("new", flag.ExitOnError)
 	name := fs.String("name", "", "sandbox name")
 	image := fs.String("image", "", "sandbox image")
-	harness := fs.String("harness", "", "codex or opencode")
+	harness := fs.String("harness", "", "codex, opencode, claude-code or omp (same as --image)")
 	// allow the repo before or after flags
 	var pos []string
 	for len(args) > 0 {

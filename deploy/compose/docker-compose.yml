@@ -154,9 +154,9 @@ services:
     command:
       - |
         MK=$$(cat /secrets/litellm_master_key); RK=$$(cat /secrets/reviewer_key)
-        code=$$(curl -s -o /tmp/out -w '%{http_code}' -X POST http://litellm:4000/key/generate \
+        code=$$(curl -s -o /tmp/out -w '%{http_code}' -X POST ${LITELLM_URL:-http://litellm:4000}/key/generate \
           -H "Authorization: Bearer $$MK" -H 'Content-Type: application/json' \
-          -d "{\"key\":\"$$RK\",\"key_alias\":\"abx-reviewer\",\"models\":[\"glm-4\"],\"user_id\":\"agentbox-reviewer\"}")
+          -d "{\"key\":\"$$RK\",\"key_alias\":\"abx-reviewer\",\"models\":[\"${REVIEWER_MODEL:-glm-4}\"],\"user_id\":\"agentbox-reviewer\"}")
         if [ "$$code" = 200 ]; then echo "reviewer key created"
         elif grep -qiE 'already|duplicate|unique' /tmp/out; then echo "reviewer key already exists"
         else echo "key/generate failed ($$code)"; cat /tmp/out; exit 1; fi
@@ -169,10 +169,16 @@ services:
     image: agentbox/gatekeeper:dev
     environment:
       DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
-      LITELLM_DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/litellm?sslmode=disable
-      LITELLM_URL: http://litellm:4000
+      LITELLM_DATABASE_URL: ${LITELLM_DATABASE_URL:-postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/litellm?sslmode=disable}
+      LITELLM_URL: ${LITELLM_URL:-http://litellm:4000}
       LITELLM_MASTER_KEY_FILE: /secrets/litellm_master_key
       OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
+      # Model keys: one per sandbox, valid KEY_TTL, replaced when KEY_RENEW_BEFORE is left.
+      KEY_TTL: ${AGENTBOX_KEY_TTL:-15m}
+      KEY_RENEW_BEFORE: ${AGENTBOX_KEY_RENEW_BEFORE:-}
+      KEY_RPM: ${AGENTBOX_KEY_RPM:-0}
+      KEY_TPM: ${AGENTBOX_KEY_TPM:-0}
+      KEY_PARALLEL: ${AGENTBOX_KEY_PARALLEL:-0}
     volumes: [secrets:/secrets:ro]
     mem_limit: 128m
     depends_on:
@@ -188,6 +194,10 @@ services:
     build: {context: ../.., dockerfile: deploy/compose/envoy.Dockerfile}
     image: agentbox/front-envoy:dev
     restart: unless-stopped
+    environment:
+      # Where model requests go once the gatekeeper has approved them: the same LiteLLM it mints keys on.
+      LITELLM_URL: ${LITELLM_URL:-http://litellm:4000}
+      LITELLM_CA_FILE: ${LITELLM_CA_FILE:-}
     networks:
       agentbox: {aliases: [gw.agentbox.corp]}
     volumes: [pki:/pki:ro]
@@ -255,8 +265,9 @@ services:
     image: agentbox/reviewer:dev
     environment:
       DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
-      LITELLM_URL: http://litellm:4000
+      LITELLM_URL: ${LITELLM_URL:-http://litellm:4000}
       REVIEWER_KEY_FILE: /secrets/reviewer_key
+      REVIEWER_MODEL: ${REVIEWER_MODEL:-glm-4}
       OTLP_ENDPOINT: http://otel-gateway:4319/v1/logs
     volumes: [secrets:/secrets:ro]
     mem_limit: 64m
@@ -299,7 +310,7 @@ services:
       agentbox: {aliases: [console.agentbox.corp, enroll.agentbox.corp]}
     environment:
       DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox?sslmode=disable
-      LITELLM_DATABASE_URL: postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/litellm?sslmode=disable
+      LITELLM_DATABASE_URL: ${LITELLM_DATABASE_URL:-postgres://agentbox:${POSTGRES_PASSWORD}@postgres:5432/litellm?sslmode=disable}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: agentbox
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}

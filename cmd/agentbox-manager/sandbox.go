@@ -37,6 +37,10 @@ type Sandbox struct {
 	Error     string    `json:"error,omitempty"`
 	Bundle    int64     `json:"policy_version"`
 	Limits    bundle.Limits `json:"limits"`
+	// ModelEnv is the last model environment computed from a policy bundle. A
+	// sandbox that restarts while no bundle is loaded (offline restore, re-enrollment)
+	// keeps the model names it last had instead of starting without any.
+	ModelEnv []string `json:"model_env,omitempty"`
 }
 
 // persisted form includes the token (data disk is encrypted in production).
@@ -249,8 +253,49 @@ func (m *Manager) writeSandboxFiles(s *Sandbox, dir string) error {
 	return os.WriteFile(filepath.Join(dir, "trace.json"), tb, 0o644)
 }
 
+// modelEnv names the models a harness should use, from the device's policy:
+// the first allowed model is the default and every role a harness asks for by a
+// vendor name (Claude Code's opus, sonnet, haiku and sub-agent models) maps to
+// an allowed model, so no request is denied for naming a model the policy does
+// not list. Harnesses that read their own config files take the model from
+// AGENTBOX_MODEL.
+func smallModel(models []string) string {
+	// The first model whose name says it is a small, fast one (claude-haiku,
+	// small, gpt-mini, gemini-flash); otherwise the default model.
+	for _, name := range models {
+		for _, tok := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') }) {
+			switch tok {
+			case "small", "haiku", "mini", "fast", "flash", "nano", "lite":
+				return name
+			}
+		}
+	}
+	return models[0]
+}
+
+func (m *Manager) modelEnv(s *Sandbox) []string {
+	b := m.currentBundle()
+	if b == nil || len(b.Models) == 0 {
+		return s.ModelEnv
+	}
+	def := b.Models[0]
+	small := smallModel(b.Models)
+	s.ModelEnv = []string{
+		"AGENTBOX_MODEL=" + def,
+		"AGENTBOX_SMALL_MODEL=" + small,
+		"AGENTBOX_MODELS=" + strings.Join(b.Models, ","),
+		"ANTHROPIC_MODEL=" + def,
+		"ANTHROPIC_DEFAULT_OPUS_MODEL=" + def,
+		"ANTHROPIC_DEFAULT_SONNET_MODEL=" + def,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL=" + small,
+		"ANTHROPIC_SMALL_FAST_MODEL=" + small,
+		"CLAUDE_CODE_SUBAGENT_MODEL=" + def,
+	}
+	return s.ModelEnv
+}
+
 func (m *Manager) sandboxEnv(s *Sandbox) []string {
-	return []string{
+	return append(m.modelEnv(s), []string{
 		"AGENTBOX_SANDBOX=" + s.ID,
 		"AGENTBOX_TOKEN=" + s.Token,
 		"AGENTBOX_REPO=" + s.Repo,
@@ -270,7 +315,7 @@ func (m *Manager) sandboxEnv(s *Sandbox) []string {
 		"HOME=/root",
 		"TERM=xterm-256color",
 		"LANG=C.UTF-8",
-	}
+	}...)
 }
 
 func (m *Manager) ociSpec(s *Sandbox, rootfs, dir string) map[string]any {

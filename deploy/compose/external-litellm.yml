@@ -1,0 +1,22 @@
+# Use the company's own LiteLLM instead of the bundled one (and instead of the
+# mock model server). Nothing else changes: the gateway still mints short-lived
+# per-sandbox keys with the master key and attaches them to attested requests.
+#
+#   export LITELLM_URL=https://litellm.corp.example      # reachable from the gateway
+#   export LITELLM_DATABASE_URL='postgres://readonly:...@litellm-db.corp.example/litellm?sslmode=require'  # optional: per-user spend
+#   export REVIEWER_MODEL=small-model                    # a model the reviewer may use
+#   # put the LiteLLM master key where the gateway reads it (see docs/litellm-admin.md)
+#   docker compose -p agentbox -f deploy/compose/docker-compose.yml -f deploy/compose/external-litellm.yml \
+#     --env-file deploy/compose/.secrets/compose.env up -d
+services:
+  litellm:
+    profiles: ["bundled-litellm"]
+  mockllm:
+    profiles: ["bundled-litellm"]
+  litellm-init:
+    depends_on: !reset []
+  gatekeeper:
+    depends_on: !override
+      postgres: {condition: service_healthy}
+    environment:
+      LITELLM_URL: ${LITELLM_URL:?set LITELLM_URL to your LiteLLM proxy}

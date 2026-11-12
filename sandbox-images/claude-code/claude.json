@@ -1,0 +1,10 @@
+{
+  "hasCompletedOnboarding": true,
+  "theme": "dark",
+  "numStartups": 5,
+  "bypassPermissionsModeAccepted": true,
+  "autoUpdates": false,
+  "projects": {
+    "/workspace": { "hasTrustDialogAccepted": true, "hasCompletedProjectOnboarding": true }
+  }
+}

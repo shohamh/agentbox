@@ -1,0 +1,9 @@
+#!/bin/sh
+# Installed as `omp`; the real binary is omp.real. Writes the Agentbox provider
+# (models from the policy) and selects the policy's default model unless the
+# caller chose one.
+/usr/local/bin/omp-models
+case " $* " in
+  *" --model "*|*" -m "*) exec /usr/local/bin/omp.real "$@" ;;
+esac
+exec /usr/local/bin/omp.real --model "agentbox/${AGENTBOX_MODEL}" "$@"

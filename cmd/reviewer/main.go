@@ -55,7 +55,7 @@ func main() {
 				r.key = strings.TrimSpace(string(b))
 			}
 		}
-		r.model = "glm-4"
+		r.model = envOr("REVIEWER_MODEL", "glm-4")
 		var cfg struct {
 			Model string `json:"model"`
 		}
@@ -186,4 +186,11 @@ func parseVerdict(s string) (string, string) {
 		return v.Verdict, v.Reason
 	}
 	return "escalate", "reviewer gave an unknown verdict; escalated"
+}
+
+func envOr(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
 }

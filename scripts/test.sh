@@ -11,6 +11,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+# Short model keys in the test bed so E2E-18 can watch a key being replaced (production default: 15m).
+export AGENTBOX_KEY_TTL="${AGENTBOX_KEY_TTL:-90s}"
 
 PROJECT="${COMPOSE_PROJECT:-agentbox}"
 FILES=(-f deploy/compose/docker-compose.yml -f deploy/compose/appliance.yml)

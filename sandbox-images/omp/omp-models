@@ -1,0 +1,18 @@
+#!/bin/sh
+# Writes ~/.omp/agent/models.yml from the sandbox's environment: one provider,
+# "agentbox", whose models are the ones the device's policy allows.
+set -e
+mkdir -p /root/.omp/agent
+{
+  echo "providers:"
+  echo "  agentbox:"
+  echo "    baseUrl: ${OPENAI_BASE_URL:-http://llm.agentbox:4000/v1}"
+  echo "    apiKey: AGENTBOX_TOKEN"
+  echo "    api: openai-completions"
+  echo "    auth: apiKey"
+  echo "    models:"
+  for m in $(echo "${AGENTBOX_MODELS:-${AGENTBOX_MODEL:-}}" | tr ',' ' '); do
+    echo "      - id: $m"
+    echo "        name: $m"
+  done
+} > /root/.omp/agent/models.yml

@@ -46,7 +46,7 @@ func DefaultGroup() GroupPolicy {
 	return GroupPolicy{
 		Models:       []string{"deepseek-v3", "glm-4"},
 		Egress:       []string{"git.agentbox.corp"},
-		Images:       []string{"base", "codex", "opencode"},
+		Images:       []string{"base", "codex", "opencode", "claude-code", "omp"},
 		TierCap:      3,
 		Limits:       bundle.Limits{CPUs: 2, MemoryMB: 2048, PIDs: 512},
 		RateLimitRPM: 120,

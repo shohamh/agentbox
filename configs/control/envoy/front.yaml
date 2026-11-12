@@ -50,7 +50,9 @@ static_resources:
               domains: ["*"]
               routes:
               - match: {prefix: "/"}
-                route: {cluster: litellm, timeout: 0s}
+                # @@LITELLM_*@@ placeholders are filled from LITELLM_URL at start
+                # (front-entrypoint.sh): host, port, TLS, an optional path prefix.
+                route: {cluster: litellm, timeout: 0s, host_rewrite_literal: "@@LITELLM_HOST@@", prefix_rewrite: "@@LITELLM_PREFIX@@/"}
           # Clear errors instead of empty bodies. Gatekeeper's own denials (kill
           # switch, budget, revoked, ...) carry their own body and are never
           # 502; an ext_authz failure (gatekeeper down) is mapped from 502.
@@ -122,8 +124,9 @@ static_resources:
   - name: litellm
     type: STRICT_DNS
     connect_timeout: 3s
+    # @@LITELLM_TLS@@
     load_assignment:
       cluster_name: litellm
       endpoints:
       - lb_endpoints:
-        - endpoint: {address: {socket_address: {address: litellm, port_value: 4000}}}
+        - endpoint: {address: {socket_address: {address: "@@LITELLM_HOST@@", port_value: @@LITELLM_PORT@@}}}
